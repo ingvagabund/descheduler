@@ -19,7 +19,7 @@ package test
 import (
 	"fmt"
 
-	"k8s.io/api/core/v1"
+	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
@@ -160,4 +160,15 @@ func SetPodPriority(pod *v1.Pod, priority int32) {
 // SetNodeUnschedulable sets the given node unschedulable
 func SetNodeUnschedulable(node *v1.Node) {
 	node.Spec.Unschedulable = true
+}
+
+// SetPodExtendedResouce sets the given pod's extended resources
+func SetPodExtendedResourceRequest(pod *v1.Pod, resourceName v1.ResourceName, requestQuantity int64) {
+	pod.Spec.Containers[0].Resources.Requests[resourceName] = *resource.NewQuantity(requestQuantity, resource.DecimalSI)
+}
+
+// SetNodeExtendedResouces sets the given node's extended resources
+func SetNodeExtendedResource(node *v1.Node, resourceName v1.ResourceName, requestQuantity int64) {
+	node.Status.Capacity[resourceName] = *resource.NewQuantity(requestQuantity, resource.DecimalSI)
+	node.Status.Allocatable[resourceName] = *resource.NewQuantity(requestQuantity, resource.DecimalSI)
 }
