@@ -20,6 +20,7 @@ package app
 import (
 	"context"
 	"io"
+	"k8s.io/apiserver/pkg/server/healthz"
 
 	"sigs.k8s.io/descheduler/cmd/descheduler/app/options"
 	"sigs.k8s.io/descheduler/pkg/descheduler"
@@ -68,8 +69,8 @@ func NewDeschedulerCommand(out io.Writer) *cobra.Command {
 				klog.SetLogger(log)
 			}
 
+			ctx := context.TODO()
 			if !s.DisableMetrics {
-				ctx := context.TODO()
 				pathRecorderMux := mux.NewPathRecorderMux("descheduler")
 				pathRecorderMux.Handle("/metrics", legacyregistry.HandlerWithReset())
 
@@ -77,6 +78,16 @@ func NewDeschedulerCommand(out io.Writer) *cobra.Command {
 					klog.Fatalf("failed to start secure server: %v", err)
 					return
 				}
+			}
+
+			// healthz returns true when health check pass
+			var checker []healthz.HealthChecker
+			checker = append(checker,  healthz.NamedCheck("Descheduler", healthz.PingHealthz.Check))
+			newMux := mux.NewPathRecorderMux("healthz")
+			healthz.InstallHandler(newMux, checker...)
+
+			if _, err := SecureServing.Serve(newMux, 0, ctx.Done()); err != nil {
+				klog.Fatalf("failed to start secure server: %v", err)
 			}
 
 			err := Run(s)
