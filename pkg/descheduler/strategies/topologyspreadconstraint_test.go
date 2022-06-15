@@ -936,6 +936,60 @@ func TestTopologySpreadConstraint(t *testing.T) {
 			},
 			namespaces: []string{"ns1"},
 		},
+		{
+			name: "5 domains, sizes [[1], [2], [4], [6], [8], [9]], maxSkew=2, NodeFit is enabled; should move 5",
+			nodes: []*v1.Node{
+				test.BuildTestNode("A", 100, 2000, 9, func(n *v1.Node) { n.Labels["zone"] = "zoneA" }),
+				test.BuildTestNode("B", 1000, 2000, 9, func(n *v1.Node) { n.Labels["zone"] = "zoneB" }),
+				test.BuildTestNode("C", 1000, 2000, 9, func(n *v1.Node) { n.Labels["zone"] = "zoneC" }),
+				test.BuildTestNode("D", 1000, 2000, 9, func(n *v1.Node) { n.Labels["zone"] = "zoneD" }),
+				test.BuildTestNode("E", 1000, 2000, 9, func(n *v1.Node) { n.Labels["zone"] = "zoneE" }),
+				test.BuildTestNode("F", 1000, 2000, 9, func(n *v1.Node) { n.Labels["zone"] = "zoneF" }),
+			},
+			pods: createTestPods([]testPodList{
+				{
+					count:       1,
+					node:        "A",
+					labels:      map[string]string{"foo": "bar"},
+					constraints: getDefaultTopologyConstraints(2),
+				},
+				{
+					count:       2,
+					node:        "B",
+					labels:      map[string]string{"foo": "bar"},
+					constraints: getDefaultTopologyConstraints(2),
+				},
+				{
+					count:       4,
+					node:        "C",
+					labels:      map[string]string{"foo": "bar"},
+					constraints: getDefaultTopologyConstraints(2),
+				},
+				{
+					count:       6,
+					node:        "D",
+					labels:      map[string]string{"foo": "bar"},
+					constraints: getDefaultTopologyConstraints(2),
+				},
+				{
+					count:       8,
+					node:        "E",
+					labels:      map[string]string{"foo": "bar"},
+					constraints: getDefaultTopologyConstraints(2),
+				},
+				{
+					count:       9,
+					node:        "F",
+					labels:      map[string]string{"foo": "bar"},
+					constraints: getDefaultTopologyConstraints(2),
+				},
+			}),
+			expectedEvictedCount: 5,
+			strategy: api.DeschedulerStrategy{
+				Params: &api.StrategyParameters{NodeFit: true},
+			},
+			namespaces: []string{"ns1"},
+		},
 	}
 
 	for _, tc := range testCases {

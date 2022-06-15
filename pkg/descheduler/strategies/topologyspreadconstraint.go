@@ -18,9 +18,11 @@ package strategies
 
 import (
 	"context"
+	"fmt"
 	"math"
 	"reflect"
 	"sort"
+	"strings"
 
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -45,6 +47,11 @@ type topologyPair struct {
 type topology struct {
 	pair topologyPair
 	pods []*v1.Pod
+}
+
+func swapTopology(topa, topb *topology) {
+	topa.pair, topb.pair = topb.pair, topa.pair
+	topa.pods, topb.pods = topb.pods, topa.pods
 }
 
 func RemovePodsViolatingTopologySpreadConstraint(
@@ -255,7 +262,16 @@ func balanceDomains(
 	// j is the index for aboveAvg
 	i := 0
 	j := len(sortedDomains) - 1
+	iterations := 0
+	all_evictions := 0
+	movements := 0
 	for i < j {
+		iterations++
+		cnts := []string{}
+		for _, c := range sortedDomains {
+			cnts = append(cnts, fmt.Sprintf("%v", len(c.pods)))
+		}
+		fmt.Printf("[%v]\n", strings.Join(cnts, ", "))
 		// if j has no more to give without falling below the ideal average, move to next aboveAvg
 		if float64(len(sortedDomains[j].pods)) <= idealAvg {
 			j--
@@ -263,7 +279,6 @@ func balanceDomains(
 
 		// skew = actual difference between the domains
 		skew := float64(len(sortedDomains[j].pods) - len(sortedDomains[i].pods))
-
 		// if k and j are within the maxSkew of each other, move to next belowOrEqualAvg
 		if int32(skew) <= constraint.MaxSkew {
 			i++
@@ -289,6 +304,7 @@ func balanceDomains(
 		// remove pods from the higher topology and add them to the list of pods to be evicted
 		// also (just for tracking), add them to the list of pods in the lower topology
 		aboveToEvict := sortedDomains[j].pods[len(sortedDomains[j].pods)-movePods:]
+		evicted := 0
 		for k := range aboveToEvict {
 			// PodFitsAnyOtherNode excludes the current node because, for the sake of domain balancing only, we care about if there is any other
 			// place it could theoretically fit.
@@ -305,12 +321,32 @@ func balanceDomains(
 				klog.V(2).InfoS("ignoring pod for eviction as it does not fit on any other node", "pod", klog.KObj(aboveToEvict[k]))
 				continue
 			}
-
+			evicted++
+			all_evictions++
 			podsForEviction[aboveToEvict[k]] = struct{}{}
 		}
+		movements++
 		sortedDomains[j].pods = sortedDomains[j].pods[:len(sortedDomains[j].pods)-movePods]
 		sortedDomains[i].pods = append(sortedDomains[i].pods, aboveToEvict...)
+		// Move sortedDomains[j] to the left so all domains after sortedDomains[j] has higher number of pods left
+		l := j
+		for l > 0 && len(sortedDomains[l].pods) < len(sortedDomains[l-1].pods) {
+			swapTopology(&sortedDomains[l], &sortedDomains[l-1])
+			l--
+		}
+		// Move sortedDomains[i] to the right so all domains before sortedDomains[i] has lower number of pods left
+		l = 0
+		for l < j && len(sortedDomains[l].pods) > len(sortedDomains[l+1].pods) {
+			swapTopology(&sortedDomains[l], &sortedDomains[l+1])
+			l++
+		}
+		cnts = []string{}
+		for _, c := range sortedDomains {
+			cnts = append(cnts, fmt.Sprintf("%v", len(c.pods)))
+		}
+		fmt.Printf("#[%v], evicted=%v\n", strings.Join(cnts, ", "), evicted)
 	}
+	fmt.Printf("iterations: %v, all_evictions: %v, movements: %v\n", iterations, all_evictions, movements)
 }
 
 // sortDomains sorts and splits the list of topology domains based on their size
