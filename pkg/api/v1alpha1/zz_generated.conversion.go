@@ -168,15 +168,15 @@ func autoConvert_api_DeschedulerPolicy_To_v1alpha1_DeschedulerPolicy(in *api.Des
 	out.IgnorePVCPods = (*bool)(unsafe.Pointer(in.IgnorePVCPods))
 	if in.MaxNoOfPodsToEvictPerNode != nil {
 		in, out := &in.MaxNoOfPodsToEvictPerNode, &out.MaxNoOfPodsToEvictPerNode
-		*out = new(int)
-		**out = int(**in)
+		*out = new(uint)
+		**out = uint(**in)
 	} else {
 		out.MaxNoOfPodsToEvictPerNode = nil
 	}
 	if in.MaxNoOfPodsToEvictPerNamespace != nil {
 		in, out := &in.MaxNoOfPodsToEvictPerNamespace, &out.MaxNoOfPodsToEvictPerNamespace
-		*out = new(int)
-		**out = int(**in)
+		*out = new(uint)
+		**out = uint(**in)
 	} else {
 		out.MaxNoOfPodsToEvictPerNamespace = nil
 	}
@@ -275,8 +275,8 @@ func Convert_v1alpha1_NodeResourceUtilizationThresholds_To_api_NodeResourceUtili
 
 func autoConvert_api_NodeResourceUtilizationThresholds_To_v1alpha1_NodeResourceUtilizationThresholds(in *api.NodeResourceUtilizationThresholds, out *NodeResourceUtilizationThresholds, s conversion.Scope) error {
 	out.UseDeviationThresholds = in.UseDeviationThresholds
-	out.Thresholds = *(*ResourceThresholds)(unsafe.Pointer(&in.Thresholds))
-	out.TargetThresholds = *(*ResourceThresholds)(unsafe.Pointer(&in.TargetThresholds))
+	out.Thresholds = *(*api.ResourceThresholds)(unsafe.Pointer(&in.Thresholds))
+	out.TargetThresholds = *(*api.ResourceThresholds)(unsafe.Pointer(&in.TargetThresholds))
 	out.NumberOfNodes = in.NumberOfNodes
 	return nil
 }
