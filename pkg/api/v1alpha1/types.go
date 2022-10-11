@@ -93,10 +93,10 @@ type StrategyParameters struct {
 type Percentage float64
 
 type NodeResourceUtilizationThresholds struct {
-	UseDeviationThresholds bool               `json:"useDeviationThresholds,omitempty"`
+	UseDeviationThresholds bool                   `json:"useDeviationThresholds,omitempty"`
 	Thresholds             api.ResourceThresholds `json:"thresholds,omitempty"`
 	TargetThresholds       api.ResourceThresholds `json:"targetThresholds,omitempty"`
-	NumberOfNodes          int                `json:"numberOfNodes,omitempty"`
+	NumberOfNodes          int                    `json:"numberOfNodes,omitempty"`
 }
 
 type PodsHavingTooManyRestarts struct {

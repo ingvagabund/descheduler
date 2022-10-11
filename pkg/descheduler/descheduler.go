@@ -332,7 +332,7 @@ func RunDeschedulerStrategies(ctx context.Context, rs *options.DeschedulerServer
 				}
 			}
 
-			for _, pluginName := range enabledBalancePlugins{
+			for _, pluginName := range enabledBalancePlugins {
 				err := runPlugin(ctx, profile, pluginName, filterArgs, rs.Client, getPodsAssignedToNode, sharedInformerFactory, podEvictor, nodes)
 				if err != nil {
 					klog.Errorf("could not run plugin", err)
@@ -388,24 +388,24 @@ func runPlugin(ctx context.Context, profile v1alpha2.Profile, pluginName string,
 }
 
 func getPluginConfig(pluginName string, pluginConfigs []v1alpha2.PluginConfig) *v1alpha2.PluginConfig {
-	for _, pluginConfig := range pluginConfigs{
-		if pluginConfig.Name == pluginName{
+	for _, pluginConfig := range pluginConfigs {
+		if pluginConfig.Name == pluginName {
 			return &pluginConfig
 		}
 	}
 	return nil
-} 
+}
 
 func getSortersFiltersAndEvictorConfigFromProfile(profile v1alpha2.Profile) (v1alpha2.PluginConfig, v1alpha2.PluginConfig, v1alpha2.PluginConfig) {
 	var evictorConfig v1alpha2.PluginConfig
 	var filterConfig v1alpha2.PluginConfig
 	var preEvictionFilterConfig v1alpha2.PluginConfig
 
-	evictorPluginName:=  profile.Plugins.Evict.Enabled[0]
-	filterPluginName :=  profile.Plugins.Filter.Enabled[0]
-	preEvictionFilterPluginName :=  profile.Plugins.PreEvictionFilter.Enabled[0]
+	evictorPluginName := profile.Plugins.Evict.Enabled[0]
+	filterPluginName := profile.Plugins.Filter.Enabled[0]
+	preEvictionFilterPluginName := profile.Plugins.PreEvictionFilter.Enabled[0]
 	for _, pluginConfig := range profile.PluginConfig {
-		if pluginConfig.Name ==  evictorPluginName{
+		if pluginConfig.Name == evictorPluginName {
 			evictorConfig = pluginConfig
 		}
 		if pluginConfig.Name == filterPluginName {

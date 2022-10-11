@@ -30,7 +30,7 @@ type DefaultEvictorArgs struct {
 	EvictSystemCriticalPods bool
 	IgnorePvcPods           bool
 	EvictFailedBarePods     bool
-	LabelSelector 			*metav1.LabelSelector
+	LabelSelector           *metav1.LabelSelector
 	PriorityThreshold       *api.PriorityThreshold
 	NodeFit                 bool
 }

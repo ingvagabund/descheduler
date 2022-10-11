@@ -63,7 +63,7 @@ func TestTaintsUpdated(t *testing.T) {
 			},
 		},
 	}
-	
+
 	rs, err := options.NewDeschedulerServer()
 	if err != nil {
 		t.Fatalf("Unable to initialize server: %v", err)
@@ -154,7 +154,7 @@ func TestDuplicate(t *testing.T) {
 			},
 		},
 	}
-	
+
 	rs, err := options.NewDeschedulerServer()
 	if err != nil {
 		t.Fatalf("Unable to initialize server: %v", err)
