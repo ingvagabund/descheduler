@@ -85,16 +85,16 @@ func decodeVersionedPolicy(kind schema.ObjectKind, decoder runtime.Decoder, poli
 			return nil, err
 		}
 	}
+	v2Policy = setDefaults(*v2Policy)
 	err = validateDeschedulerConfiguration(*v2Policy)
 	if err != nil {
 		return nil, err
 	}
-	v2Policy = setDefaults(*v2Policy)
 	return v2Policy, nil
 }
 
-func convertV1ToV2Policy(in *v1alpha1.DeschedulerPolicy) (*v1alpha2.DeschedulerPolicy, error){
-    profiles , err := strategyToProfiles(in.Strategies)
+func convertV1ToV2Policy(in *v1alpha1.DeschedulerPolicy) (*v1alpha2.DeschedulerPolicy, error) {
+	profiles, err := strategyToProfiles(in.Strategies)
 	if err != nil {
 		return nil, err
 	}
@@ -102,10 +102,10 @@ func convertV1ToV2Policy(in *v1alpha1.DeschedulerPolicy) (*v1alpha2.DeschedulerP
 	profilesWithDefaultEvictor := policyToDefaultEvictor(in, *profiles)
 
 	return &v1alpha2.DeschedulerPolicy{
-		TypeMeta:                  *&in.TypeMeta,
-		Profiles:                  *profilesWithDefaultEvictor,
-		NodeSelector:              in.NodeSelector,
-		MaxNoOfPodsToEvictPerNode: in.MaxNoOfPodsToEvictPerNode,
+		TypeMeta:                       *&in.TypeMeta,
+		Profiles:                       *profilesWithDefaultEvictor,
+		NodeSelector:                   in.NodeSelector,
+		MaxNoOfPodsToEvictPerNode:      in.MaxNoOfPodsToEvictPerNode,
 		MaxNoOfPodsToEvictPerNamespace: in.MaxNoOfPodsToEvictPerNamespace,
 	}, nil
 }
@@ -140,21 +140,26 @@ func setDefaultEvictor(in v1alpha2.DeschedulerPolicy) *v1alpha2.DeschedulerPolic
 				in.Profiles[idx].PluginConfig, v1alpha2.PluginConfig{
 					Name: defaultevictor.PluginName,
 					Args: &defaultevictor.DefaultEvictorArgs{
-						EvictLocalStoragePods: false,
+						EvictLocalStoragePods:   false,
 						EvictSystemCriticalPods: false,
-						IgnorePvcPods: false,
-						EvictFailedBarePods: false,
+						IgnorePvcPods:           false,
+						EvictFailedBarePods:     false,
 					},
 				},
 			)
 		}
-
 
 	}
 	return &in
 }
 
 func validateDeschedulerConfiguration(in v1alpha2.DeschedulerPolicy) error {
+	// v1alpha2.DeschedulerPolicy needs only 1 evictor plugin enabled
+	for _, profile := range in.Profiles {
+		if len(profile.Plugins.Evict.Enabled) > 1 {
+			return fmt.Errorf("profile with multiple evictor plugins enable found. Please enable a single evictor plugin.")
+		}
+	}
 	return nil
 }
 
@@ -165,7 +170,7 @@ func strategyToProfiles(strategies v1alpha1.StrategyList) (*[]v1alpha2.Profile, 
 		case "RemoveDuplicates":
 			removeduplicatesArgs := convertRemoveDuplicatesArgs(strategy.Params)
 			profiles[0].PluginConfig = append(profiles[0].PluginConfig, configurePlugin(removeduplicatesArgs, string(name)))
-			if strategy.Enabled{
+			if strategy.Enabled {
 				profiles[0].Plugins.Balance.Enabled = append(profiles[0].Plugins.Balance.Enabled, string(name))
 			} else {
 				profiles[0].Plugins.Balance.Disabled = append(profiles[0].Plugins.Balance.Enabled, string(name))
@@ -173,7 +178,7 @@ func strategyToProfiles(strategies v1alpha1.StrategyList) (*[]v1alpha2.Profile, 
 		case "LowNodeUtilization":
 			lowNodeUtilizationArgs := convertLowNodeUtilizationArgs(strategy.Params)
 			profiles[0].PluginConfig = append(profiles[0].PluginConfig, configurePlugin(lowNodeUtilizationArgs, string(name)))
-			if strategy.Enabled{
+			if strategy.Enabled {
 				profiles[0].Plugins.Balance.Enabled = append(profiles[0].Plugins.Balance.Enabled, string(name))
 			} else {
 				profiles[0].Plugins.Balance.Disabled = append(profiles[0].Plugins.Balance.Enabled, string(name))
@@ -181,70 +186,70 @@ func strategyToProfiles(strategies v1alpha1.StrategyList) (*[]v1alpha2.Profile, 
 		case "HighNodeUtilization":
 			highNodeUtilizationArgs := convertHighNodeUtilizationArgs(strategy.Params)
 			profiles[0].PluginConfig = append(profiles[0].PluginConfig, configurePlugin(highNodeUtilizationArgs, string(name)))
-			if strategy.Enabled{
+			if strategy.Enabled {
 				profiles[0].Plugins.Balance.Enabled = append(profiles[0].Plugins.Balance.Enabled, string(name))
 			} else {
 				profiles[0].Plugins.Balance.Disabled = append(profiles[0].Plugins.Balance.Enabled, string(name))
 			}
 		case "RemovePodsViolatingInterPodAntiAffinity":
 			removePodsViolatingInterPodAntiAffinityArgs := convertRemovePodsViolatingInterPodAntiAffinityArgs(strategy.Params)
-			profiles[0].PluginConfig =  append(profiles[0].PluginConfig, configurePlugin(removePodsViolatingInterPodAntiAffinityArgs, string(name)))
-			if strategy.Enabled{
+			profiles[0].PluginConfig = append(profiles[0].PluginConfig, configurePlugin(removePodsViolatingInterPodAntiAffinityArgs, string(name)))
+			if strategy.Enabled {
 				profiles[0].Plugins.Deschedule.Enabled = append(profiles[0].Plugins.Deschedule.Enabled, string(name))
 			} else {
 				profiles[0].Plugins.Deschedule.Disabled = append(profiles[0].Plugins.Deschedule.Enabled, string(name))
 			}
 		case "RemovePodsViolatingNodeAffinity":
 			removePodsViolatingNodeAffinityArgs := convertRemovePodsViolatingNodeAffinityArgs(strategy.Params)
-			profiles[0].PluginConfig =  append(profiles[0].PluginConfig, configurePlugin(removePodsViolatingNodeAffinityArgs, string(name)))
-			if strategy.Enabled{
+			profiles[0].PluginConfig = append(profiles[0].PluginConfig, configurePlugin(removePodsViolatingNodeAffinityArgs, string(name)))
+			if strategy.Enabled {
 				profiles[0].Plugins.Deschedule.Enabled = append(profiles[0].Plugins.Deschedule.Enabled, string(name))
 			} else {
 				profiles[0].Plugins.Deschedule.Disabled = append(profiles[0].Plugins.Deschedule.Enabled, string(name))
 			}
 		case "RemovePodsViolatingNodeTaints":
 			removePodsViolatingNodeTaintsArgs := convertRemovePodsViolatingNodeTaintsArgs(strategy.Params)
-			profiles[0].PluginConfig =  append(profiles[0].PluginConfig, configurePlugin(removePodsViolatingNodeTaintsArgs, string(name)))
-			if strategy.Enabled{
+			profiles[0].PluginConfig = append(profiles[0].PluginConfig, configurePlugin(removePodsViolatingNodeTaintsArgs, string(name)))
+			if strategy.Enabled {
 				profiles[0].Plugins.Deschedule.Enabled = append(profiles[0].Plugins.Deschedule.Enabled, string(name))
 			} else {
 				profiles[0].Plugins.Deschedule.Disabled = append(profiles[0].Plugins.Deschedule.Enabled, string(name))
 			}
 		case "RemovePodsViolatingTopologySpreadConstraint":
 			removePodsViolatingTopologySpreadConstraintArgs := convertRemovePodsViolatingTopologySpreadConstraintArgs(strategy.Params)
-			profiles[0].PluginConfig =  append(profiles[0].PluginConfig, configurePlugin(removePodsViolatingTopologySpreadConstraintArgs, string(name)))
-			if strategy.Enabled{
+			profiles[0].PluginConfig = append(profiles[0].PluginConfig, configurePlugin(removePodsViolatingTopologySpreadConstraintArgs, string(name)))
+			if strategy.Enabled {
 				profiles[0].Plugins.Balance.Enabled = append(profiles[0].Plugins.Balance.Enabled, string(name))
 			} else {
 				profiles[0].Plugins.Balance.Disabled = append(profiles[0].Plugins.Balance.Enabled, string(name))
 			}
 		case "RemovePodsHavingTooManyRestarts":
 			removePodsHavingTooManyRestartsArgs := convertRemovePodsHavingTooManyRestartsArgs(strategy.Params)
-			profiles[0].PluginConfig =  append(profiles[0].PluginConfig, configurePlugin(removePodsHavingTooManyRestartsArgs, string(name)))
-			if strategy.Enabled{
+			profiles[0].PluginConfig = append(profiles[0].PluginConfig, configurePlugin(removePodsHavingTooManyRestartsArgs, string(name)))
+			if strategy.Enabled {
 				profiles[0].Plugins.Deschedule.Enabled = append(profiles[0].Plugins.Deschedule.Enabled, string(name))
 			} else {
 				profiles[0].Plugins.Deschedule.Disabled = append(profiles[0].Plugins.Deschedule.Enabled, string(name))
 			}
 		case "PodLifeTime":
 			podLifeTimeArgs := convertPodLifeTimeArgs(strategy.Params)
-			profiles[0].PluginConfig =  append(profiles[0].PluginConfig, configurePlugin(podLifeTimeArgs, string(name)))
-			if strategy.Enabled{
+			profiles[0].PluginConfig = append(profiles[0].PluginConfig, configurePlugin(podLifeTimeArgs, string(name)))
+			if strategy.Enabled {
 				profiles[0].Plugins.Deschedule.Enabled = append(profiles[0].Plugins.Deschedule.Enabled, string(name))
 			} else {
 				profiles[0].Plugins.Deschedule.Disabled = append(profiles[0].Plugins.Deschedule.Enabled, string(name))
 			}
 		case "RemoveFailedPods":
 			RemoveFailedPodsArgs := convertRemoveFailedPodsArgs(strategy.Params)
-			profiles[0].PluginConfig =  append(profiles[0].PluginConfig, configurePlugin(RemoveFailedPodsArgs, string(name)))
-			if strategy.Enabled{
+			profiles[0].PluginConfig = append(profiles[0].PluginConfig, configurePlugin(RemoveFailedPodsArgs, string(name)))
+			if strategy.Enabled {
 				profiles[0].Plugins.Deschedule.Enabled = append(profiles[0].Plugins.Deschedule.Enabled, string(name))
 			} else {
 				profiles[0].Plugins.Deschedule.Disabled = append(profiles[0].Plugins.Deschedule.Enabled, string(name))
 			}
 		default:
 			return nil, fmt.Errorf("could not process strategy: %s", string(name))
-	    }
+		}
 	}
 	return &profiles, nil
 }
