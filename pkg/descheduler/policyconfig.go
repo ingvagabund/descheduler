@@ -24,6 +24,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/klog/v2"
 
+	"sigs.k8s.io/descheduler/pkg/api"
 	"sigs.k8s.io/descheduler/pkg/api/v1alpha1"
 	"sigs.k8s.io/descheduler/pkg/api/v1alpha2"
 	"sigs.k8s.io/descheduler/pkg/descheduler/scheme"
@@ -111,7 +112,7 @@ func convertV1ToV2Policy(in *v1alpha1.DeschedulerPolicy) (*v1alpha2.DeschedulerP
 }
 
 func policyToDefaultEvictor(in *v1alpha1.DeschedulerPolicy, profiles []v1alpha2.Profile) *[]v1alpha2.Profile {
-	var defaultEvictorArgs *defaultevictor.DefaultEvictorArgs
+	defaultEvictorArgs := &defaultevictor.DefaultEvictorArgs{}
 	// LabelSelector, PriorityThreshold and Nodefit are passed through the strategy
 	// parameters from v1alpha1 while processing those in pkg/descheduler/descheduler.go
 	defaultEvictorArgs.NodeSelector = *in.NodeSelector
@@ -296,15 +297,19 @@ func configurePlugin(args runtime.Object, name string) v1alpha2.PluginConfig {
 }
 
 func convertRemoveDuplicatesArgs(params *v1alpha1.StrategyParameters) *removeduplicates.RemoveDuplicatesArgs {
-	var removeduplicatesArgs *removeduplicates.RemoveDuplicatesArgs
+	removeduplicatesArgs := &removeduplicates.RemoveDuplicatesArgs{}
 	removeduplicatesArgs.ExcludeOwnerKinds = params.RemoveDuplicates.ExcludeOwnerKinds
-	removeduplicatesArgs.Namespaces.Include = params.Namespaces.Include
-	removeduplicatesArgs.Namespaces.Exclude = params.Namespaces.Exclude
+	if params.Namespaces != nil {
+		removeduplicatesArgs.Namespaces = &api.Namespaces{
+			Include: params.Namespaces.Include,
+			Exclude: params.Namespaces.Exclude,
+		}
+	}
 	return removeduplicatesArgs
 }
 
 func convertLowNodeUtilizationArgs(params *v1alpha1.StrategyParameters) *nodeutilization.LowNodeUtilizationArgs {
-	var lowNodeUtilizationArgs *nodeutilization.LowNodeUtilizationArgs
+	lowNodeUtilizationArgs := &nodeutilization.LowNodeUtilizationArgs{}
 	lowNodeUtilizationArgs.TargetThresholds = params.NodeResourceUtilizationThresholds.TargetThresholds
 	lowNodeUtilizationArgs.Thresholds = params.NodeResourceUtilizationThresholds.Thresholds
 	lowNodeUtilizationArgs.UseDeviationThresholds = params.NodeResourceUtilizationThresholds.UseDeviationThresholds
@@ -313,31 +318,43 @@ func convertLowNodeUtilizationArgs(params *v1alpha1.StrategyParameters) *nodeuti
 }
 
 func convertHighNodeUtilizationArgs(params *v1alpha1.StrategyParameters) *nodeutilization.HighNodeUtilizationArgs {
-	var highNodeUtilizationArgs *nodeutilization.HighNodeUtilizationArgs
+	highNodeUtilizationArgs := &nodeutilization.HighNodeUtilizationArgs{}
 	highNodeUtilizationArgs.NumberOfNodes = params.NodeResourceUtilizationThresholds.NumberOfNodes
 	return highNodeUtilizationArgs
 }
 
 func convertRemovePodsViolatingInterPodAntiAffinityArgs(params *v1alpha1.StrategyParameters) *removepodsviolatinginterpodantiaffinity.RemovePodsViolatingInterPodAntiAffinityArgs {
-	var removePodsViolatingInterPodAntiAffinityArgs *removepodsviolatinginterpodantiaffinity.RemovePodsViolatingInterPodAntiAffinityArgs
-	removePodsViolatingInterPodAntiAffinityArgs.Namespaces.Include = params.Namespaces.Include
-	removePodsViolatingInterPodAntiAffinityArgs.Namespaces.Exclude = params.Namespaces.Exclude
+	removePodsViolatingInterPodAntiAffinityArgs := &removepodsviolatinginterpodantiaffinity.RemovePodsViolatingInterPodAntiAffinityArgs{}
+	if params.Namespaces != nil {
+		removePodsViolatingInterPodAntiAffinityArgs.Namespaces = &api.Namespaces{
+			Include: params.Namespaces.Include,
+			Exclude: params.Namespaces.Exclude,
+		}
+	}
 	removePodsViolatingInterPodAntiAffinityArgs.LabelSelector = params.LabelSelector
 	return removePodsViolatingInterPodAntiAffinityArgs
 }
 
 func convertRemovePodsViolatingNodeAffinityArgs(params *v1alpha1.StrategyParameters) *removepodsviolatingnodeaffinity.RemovePodsViolatingNodeAffinityArgs {
-	var removePodsViolatingNodeAffinityArgs *removepodsviolatingnodeaffinity.RemovePodsViolatingNodeAffinityArgs
-	removePodsViolatingNodeAffinityArgs.Namespaces.Include = params.Namespaces.Include
-	removePodsViolatingNodeAffinityArgs.Namespaces.Exclude = params.Namespaces.Exclude
+	removePodsViolatingNodeAffinityArgs := &removepodsviolatingnodeaffinity.RemovePodsViolatingNodeAffinityArgs{}
+	if params.Namespaces != nil {
+		removePodsViolatingNodeAffinityArgs.Namespaces = &api.Namespaces{
+			Include: params.Namespaces.Include,
+			Exclude: params.Namespaces.Exclude,
+		}
+	}
 	removePodsViolatingNodeAffinityArgs.LabelSelector = params.LabelSelector
 	return removePodsViolatingNodeAffinityArgs
 }
 
 func convertRemovePodsViolatingNodeTaintsArgs(params *v1alpha1.StrategyParameters) *removepodsviolatingnodetaints.RemovePodsViolatingNodeTaintsArgs {
-	var removePodsViolatingNodeTaintsArgs *removepodsviolatingnodetaints.RemovePodsViolatingNodeTaintsArgs
-	removePodsViolatingNodeTaintsArgs.Namespaces.Include = params.Namespaces.Include
-	removePodsViolatingNodeTaintsArgs.Namespaces.Exclude = params.Namespaces.Exclude
+	removePodsViolatingNodeTaintsArgs := &removepodsviolatingnodetaints.RemovePodsViolatingNodeTaintsArgs{}
+	if params.Namespaces != nil {
+		removePodsViolatingNodeTaintsArgs.Namespaces = &api.Namespaces{
+			Include: params.Namespaces.Include,
+			Exclude: params.Namespaces.Exclude,
+		}
+	}
 	removePodsViolatingNodeTaintsArgs.LabelSelector = params.LabelSelector
 	removePodsViolatingNodeTaintsArgs.IncludePreferNoSchedule = params.IncludePreferNoSchedule
 	removePodsViolatingNodeTaintsArgs.ExcludedTaints = params.ExcludedTaints
@@ -345,18 +362,26 @@ func convertRemovePodsViolatingNodeTaintsArgs(params *v1alpha1.StrategyParameter
 }
 
 func convertRemovePodsViolatingTopologySpreadConstraintArgs(params *v1alpha1.StrategyParameters) *removepodsviolatingtopologyspreadconstraint.RemovePodsViolatingTopologySpreadConstraintArgs {
-	var removePodsViolatingTopologySpreadConstraintArgs *removepodsviolatingtopologyspreadconstraint.RemovePodsViolatingTopologySpreadConstraintArgs
-	removePodsViolatingTopologySpreadConstraintArgs.Namespaces.Include = params.Namespaces.Include
-	removePodsViolatingTopologySpreadConstraintArgs.Namespaces.Exclude = params.Namespaces.Exclude
+	removePodsViolatingTopologySpreadConstraintArgs := &removepodsviolatingtopologyspreadconstraint.RemovePodsViolatingTopologySpreadConstraintArgs{}
+	if params.Namespaces != nil {
+		removePodsViolatingTopologySpreadConstraintArgs.Namespaces = &api.Namespaces{
+			Include: params.Namespaces.Include,
+			Exclude: params.Namespaces.Exclude,
+		}
+	}
 	removePodsViolatingTopologySpreadConstraintArgs.LabelSelector = params.LabelSelector
 	removePodsViolatingTopologySpreadConstraintArgs.IncludeSoftConstraints = params.IncludeSoftConstraints
 	return removePodsViolatingTopologySpreadConstraintArgs
 }
 
 func convertRemovePodsHavingTooManyRestartsArgs(params *v1alpha1.StrategyParameters) *removepodshavingtoomanyrestarts.RemovePodsHavingTooManyRestartsArgs {
-	var removePodsHavingTooManyRestartsArgs *removepodshavingtoomanyrestarts.RemovePodsHavingTooManyRestartsArgs
-	removePodsHavingTooManyRestartsArgs.Namespaces.Include = params.Namespaces.Include
-	removePodsHavingTooManyRestartsArgs.Namespaces.Exclude = params.Namespaces.Exclude
+	removePodsHavingTooManyRestartsArgs := &removepodshavingtoomanyrestarts.RemovePodsHavingTooManyRestartsArgs{}
+	if params.Namespaces != nil {
+		removePodsHavingTooManyRestartsArgs.Namespaces = &api.Namespaces{
+			Include: params.Namespaces.Include,
+			Exclude: params.Namespaces.Exclude,
+		}
+	}
 	removePodsHavingTooManyRestartsArgs.LabelSelector = params.LabelSelector
 	removePodsHavingTooManyRestartsArgs.PodRestartThreshold = params.PodsHavingTooManyRestarts.PodRestartThreshold
 	removePodsHavingTooManyRestartsArgs.IncludingInitContainers = params.PodsHavingTooManyRestarts.IncludingInitContainers
@@ -364,9 +389,13 @@ func convertRemovePodsHavingTooManyRestartsArgs(params *v1alpha1.StrategyParamet
 }
 
 func convertPodLifeTimeArgs(params *v1alpha1.StrategyParameters) *podlifetime.PodLifeTimeArgs {
-	var podLifeTimeArgs *podlifetime.PodLifeTimeArgs
-	podLifeTimeArgs.Namespaces.Include = params.Namespaces.Include
-	podLifeTimeArgs.Namespaces.Exclude = params.Namespaces.Exclude
+	podLifeTimeArgs := &podlifetime.PodLifeTimeArgs{}
+	if params.Namespaces != nil {
+		podLifeTimeArgs.Namespaces = &api.Namespaces{
+			Include: params.Namespaces.Include,
+			Exclude: params.Namespaces.Exclude,
+		}
+	}
 	podLifeTimeArgs.LabelSelector = params.LabelSelector
 	podLifeTimeArgs.MaxPodLifeTimeSeconds = params.PodLifeTime.MaxPodLifeTimeSeconds
 	podLifeTimeArgs.States = params.PodLifeTime.States
@@ -374,9 +403,13 @@ func convertPodLifeTimeArgs(params *v1alpha1.StrategyParameters) *podlifetime.Po
 }
 
 func convertRemoveFailedPodsArgs(params *v1alpha1.StrategyParameters) *removefailedpods.RemoveFailedPodsArgs {
-	var removeFailedPodsArgs *removefailedpods.RemoveFailedPodsArgs
-	removeFailedPodsArgs.Namespaces.Include = params.Namespaces.Include
-	removeFailedPodsArgs.Namespaces.Exclude = params.Namespaces.Exclude
+	removeFailedPodsArgs := &removefailedpods.RemoveFailedPodsArgs{}
+	if params.Namespaces != nil {
+		removeFailedPodsArgs.Namespaces = &api.Namespaces{
+			Include: params.Namespaces.Include,
+			Exclude: params.Namespaces.Exclude,
+		}
+	}
 	removeFailedPodsArgs.LabelSelector = params.LabelSelector
 	removeFailedPodsArgs.ExcludeOwnerKinds = params.FailedPods.ExcludeOwnerKinds
 	removeFailedPodsArgs.MinPodLifetimeSeconds = params.FailedPods.MinPodLifetimeSeconds
