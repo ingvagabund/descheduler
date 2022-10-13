@@ -42,6 +42,7 @@ import (
 	"sigs.k8s.io/descheduler/cmd/descheduler/app/options"
 	"sigs.k8s.io/descheduler/pkg/api"
 	deschedulerapi "sigs.k8s.io/descheduler/pkg/api"
+	"sigs.k8s.io/descheduler/pkg/api/v1alpha2"
 	"sigs.k8s.io/descheduler/pkg/descheduler"
 	"sigs.k8s.io/descheduler/pkg/descheduler/client"
 	"sigs.k8s.io/descheduler/pkg/descheduler/evictions"
@@ -1097,7 +1098,30 @@ func TestDeschedulingInterval(t *testing.T) {
 	}
 	s.Client = clientSet
 
-	deschedulerPolicy := &deschedulerapi.DeschedulerPolicy{}
+	deschedulerPolicy := &v1alpha2.DeschedulerPolicy{
+		Profiles: []v1alpha2.Profile{
+			{
+				Name: "test-profile",
+				PluginConfig: []v1alpha2.PluginConfig{
+					{
+						Name: defaultevictor.PluginName,
+						Args: &defaultevictor.DefaultEvictorArgs{},
+					},
+				},
+				Plugins: v1alpha2.Plugins{
+					Evict: v1alpha2.PluginSet{
+						Enabled: []string{defaultevictor.PluginName},
+					},
+					Filter: v1alpha2.PluginSet{
+						Enabled: []string{defaultevictor.PluginName},
+					},
+					PreEvictionFilter: v1alpha2.PluginSet{
+						Enabled: []string{defaultevictor.PluginName},
+					},
+				},
+			}, // no profiles/strategies needed for this test
+		},
+	}
 
 	c := make(chan bool, 1)
 	go func() {
