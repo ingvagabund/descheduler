@@ -171,20 +171,30 @@ func cachedClient(
 // evictorImpl implements the Evictor interface so plugins
 // can evict a pod without importing a specific pod evictor
 type evictorImpl struct {
-	podEvictor    *evictions.PodEvictor
-	evictorFilter framework.EvictorPlugin
+	podEvictor              *evictions.PodEvictor
+	evictorFiltersOrSorters []framework.EvictorPlugin
 }
 
 var _ framework.Evictor = &evictorImpl{}
 
 // Filter checks if a pod can be evicted
 func (ei *evictorImpl) Filter(pod *v1.Pod) bool {
-	return ei.evictorFilter.Filter(pod)
+	var filterFuncs []podutil.FilterFunc
+	for _, filterPlugin := range ei.evictorFiltersOrSorters {
+		filterFuncs = append(filterFuncs, filterPlugin.Filter)
+	}
+	combinedFilter := podutil.WrapFilterFuncs(filterFuncs...)
+	return combinedFilter(pod)
 }
 
 // PreEvictionFilter checks if pod can be evicted right before eviction
 func (ei *evictorImpl) PreEvictionFilter(pod *v1.Pod) bool {
-	return ei.evictorFilter.PreEvictionFilter(pod)
+	var preEvictionFilterFuncs []podutil.FilterFunc
+	for _, preEvictionFilterPlugin := range ei.evictorFiltersOrSorters {
+		preEvictionFilterFuncs = append(preEvictionFilterFuncs, preEvictionFilterPlugin.PreEvictionFilter)
+	}
+	combinedFilter := podutil.WrapFilterFuncs(preEvictionFilterFuncs...)
+	return combinedFilter(pod)
 }
 
 // Evict evicts a pod (no pre-check performed)
@@ -305,8 +315,11 @@ func RunDeschedulerStrategies(ctx context.Context, rs *options.DeschedulerServer
 		}
 
 		for _, profile := range deschedulerPolicy.Profiles {
-			_, filterConfig, _ := getSortersFiltersAndEvictorConfigFromProfile(profile)
-			filterArgs := filterConfig.Args.(*defaultevictor.DefaultEvictorArgs)
+			_, filterConfigs, _ := getSortersFiltersAndEvictorConfigFromProfile(profile)
+			var filterArgs []runtime.Object
+			for _, filterConfig := range filterConfigs {
+				filterArgs = append(filterArgs, filterConfig.Args.(*defaultevictor.DefaultEvictorArgs))
+			}
 
 			klog.V(3).Infof("Building a pod evictor")
 			podEvictor := evictions.NewPodEvictor(
@@ -352,28 +365,34 @@ func RunDeschedulerStrategies(ctx context.Context, rs *options.DeschedulerServer
 	return nil
 }
 
-func runPlugin(ctx context.Context, profile v1alpha2.Profile, pluginName string, filterArgs runtime.Object, clientSet clientset.Interface, getPodsAssignedToNode podutil.GetPodsAssignedToNodeFunc, sharedInformerFactory informers.SharedInformerFactory, podEvictor *evictions.PodEvictor, nodes []*v1.Node) error {
+func runPlugin(ctx context.Context, profile v1alpha2.Profile, pluginName string, filterArgs []runtime.Object, clientSet clientset.Interface, getPodsAssignedToNode podutil.GetPodsAssignedToNodeFunc, sharedInformerFactory informers.SharedInformerFactory, podEvictor *evictions.PodEvictor, nodes []*v1.Node) error {
 	pluginConfig := getPluginConfig(pluginName, profile.PluginConfig)
 	if pluginConfig == nil {
 		return fmt.Errorf("could not get config for plugin: %s", pluginName)
 	}
 	PluginArgs := pluginConfig.Args
-
-	evictorFilter, _ := defaultevictor.New(
-		filterArgs,
-		&handleImpl{
-			clientSet:                 clientSet,
-			getPodsAssignedToNodeFunc: getPodsAssignedToNode,
-			sharedInformerFactory:     sharedInformerFactory,
-		},
-	)
+	var evictorFilters []framework.EvictorPlugin
+	for _, args := range filterArgs {
+		newEvictorFilter, err := defaultevictor.New(
+			args,
+			&handleImpl{
+				clientSet:                 clientSet,
+				getPodsAssignedToNodeFunc: getPodsAssignedToNode,
+				sharedInformerFactory:     sharedInformerFactory,
+			},
+		)
+		if err != nil {
+			return err
+		}
+		evictorFilters = append(evictorFilters, newEvictorFilter.(framework.EvictorPlugin))
+	}
 	handle := &handleImpl{
 		clientSet:                 clientSet,
 		getPodsAssignedToNodeFunc: getPodsAssignedToNode,
 		sharedInformerFactory:     sharedInformerFactory,
 		evictor: &evictorImpl{
-			podEvictor:    podEvictor,
-			evictorFilter: evictorFilter.(framework.EvictorPlugin),
+			podEvictor:              podEvictor,
+			evictorFiltersOrSorters: evictorFilters,
 		},
 	}
 	// TODO: strategyName should be accessible from within the strategy using a framework
@@ -396,26 +415,35 @@ func getPluginConfig(pluginName string, pluginConfigs []v1alpha2.PluginConfig) *
 	return nil
 }
 
-func getSortersFiltersAndEvictorConfigFromProfile(profile v1alpha2.Profile) (v1alpha2.PluginConfig, v1alpha2.PluginConfig, v1alpha2.PluginConfig) {
+func getSortersFiltersAndEvictorConfigFromProfile(profile v1alpha2.Profile) (v1alpha2.PluginConfig, []v1alpha2.PluginConfig, []v1alpha2.PluginConfig) {
 	var evictorConfig v1alpha2.PluginConfig
-	var filterConfig v1alpha2.PluginConfig
-	var preEvictionFilterConfig v1alpha2.PluginConfig
+	var filterConfigs []v1alpha2.PluginConfig
+	var preEvictionFilterConfigs []v1alpha2.PluginConfig
 
 	evictorPluginName := profile.Plugins.Evict.Enabled[0]
-	filterPluginName := profile.Plugins.Filter.Enabled[0]
-	preEvictionFilterPluginName := profile.Plugins.PreEvictionFilter.Enabled[0]
+	filterPluginNames := profile.Plugins.Filter.Enabled
+	preEvictionFilterPluginNames := profile.Plugins.PreEvictionFilter.Enabled
 	for _, pluginConfig := range profile.PluginConfig {
 		if pluginConfig.Name == evictorPluginName {
 			evictorConfig = pluginConfig
 		}
-		if pluginConfig.Name == filterPluginName {
-			filterConfig = pluginConfig
+		if contains(filterPluginNames, pluginConfig.Name) {
+			filterConfigs = append(filterConfigs, pluginConfig)
 		}
-		if pluginConfig.Name == preEvictionFilterPluginName {
-			preEvictionFilterConfig = pluginConfig
+		if contains(preEvictionFilterPluginNames, pluginConfig.Name) {
+			preEvictionFilterConfigs = append(preEvictionFilterConfigs, pluginConfig)
 		}
 	}
-	return evictorConfig, filterConfig, preEvictionFilterConfig
+	return evictorConfig, filterConfigs, preEvictionFilterConfigs
+}
+
+func contains(s []string, str string) bool {
+	for _, v := range s {
+		if v == str {
+			return true
+		}
+	}
+	return false
 }
 
 func createClients(kubeconfig string) (clientset.Interface, clientset.Interface, error) {
