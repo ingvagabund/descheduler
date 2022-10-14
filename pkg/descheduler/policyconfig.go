@@ -19,6 +19,7 @@ package descheduler
 import (
 	"fmt"
 	"io/ioutil"
+	"sort"
 
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -108,8 +109,6 @@ func convertV1ToV2Policy(in *v1alpha1.DeschedulerPolicy) (*v1alpha2.DeschedulerP
 
 func policyToDefaultEvictor(in *v1alpha1.DeschedulerPolicy, profiles []v1alpha2.Profile) *[]v1alpha2.Profile {
 	defaultEvictorArgs := &defaultevictor.DefaultEvictorArgs{}
-	// LabelSelector, PriorityThreshold and Nodefit are passed through the strategy
-	// parameters from v1alpha1 while processing those in pkg/descheduler/descheduler.go
 	if in.NodeSelector != nil {
 		defaultEvictorArgs.NodeSelector = *in.NodeSelector
 	}
@@ -136,103 +135,169 @@ func policyToDefaultEvictor(in *v1alpha1.DeschedulerPolicy, profiles []v1alpha2.
 }
 
 func setDefaults(in v1alpha2.DeschedulerPolicy) *v1alpha2.DeschedulerPolicy {
-	out := &v1alpha2.DeschedulerPolicy{}
-	out = setDefaultEvictor(in)
-	return out
-}
-
-func setDefaultEvictor(in v1alpha2.DeschedulerPolicy) *v1alpha2.DeschedulerPolicy {
 	for idx, profile := range in.Profiles {
-		if len(profile.Plugins.Filter.Enabled) == 0 {
-			in.Profiles[idx].Plugins.Filter.Enabled = append(in.Profiles[0].Plugins.Filter.Enabled, defaultevictor.PluginName)
-			in.Profiles[idx].PluginConfig = append(
-				in.Profiles[idx].PluginConfig, v1alpha2.PluginConfig{
-					Name: defaultevictor.PluginName,
-					Args: &defaultevictor.DefaultEvictorArgs{
-						EvictLocalStoragePods:   false,
-						EvictSystemCriticalPods: false,
-						IgnorePvcPods:           false,
-						EvictFailedBarePods:     false,
-					},
-				},
-			)
-		}
-
+		// Most defaults are being set at runtime, for exmaple in pkg/framework/plugins/nodeutilization/defaults.go
+		// If we need to set defaults coming from loadtime we do it here
+		in.Profiles[idx] = setDefaultEvictor(profile)
 	}
 	return &in
 }
 
+func setDefaultEvictor(profile v1alpha2.Profile) v1alpha2.Profile {
+	if len(profile.Plugins.Filter.Enabled) == 0 {
+		profile.Plugins.Filter.Enabled = append(profile.Plugins.Filter.Enabled, defaultevictor.PluginName)
+		profile.PluginConfig = append(
+			profile.PluginConfig, v1alpha2.PluginConfig{
+				Name: defaultevictor.PluginName,
+				Args: &defaultevictor.DefaultEvictorArgs{
+					EvictLocalStoragePods:   false,
+					EvictSystemCriticalPods: false,
+					IgnorePvcPods:           false,
+					EvictFailedBarePods:     false,
+				},
+			},
+		)
+	}
+	return profile
+}
+
 func validateDeschedulerConfiguration(in v1alpha2.DeschedulerPolicy) error {
-	// v1alpha2.DeschedulerPolicy needs only 1 evictor plugin enabled
+	var errorsInProfiles error
 	for _, profile := range in.Profiles {
-		if len(profile.Plugins.Evict.Enabled) > 1 {
-			return fmt.Errorf("profile with multiple evictor plugins enable found. Please enable a single evictor plugin.")
+		// v1alpha2.DeschedulerPolicy needs only 1 evictor plugin enabled
+		if len(profile.Plugins.Evict.Enabled) != 1 {
+			errTooManyEvictors := fmt.Errorf("profile with invalid number of evictor plugins enabled found. Please enable a single evictor plugin.")
+			errorsInProfiles = setErrorsInProfiles(errTooManyEvictors, profile.Name, errorsInProfiles)
+		}
+		for _, pluginConfig := range profile.PluginConfig {
+			switch pluginConfig.Name {
+			case removeduplicates.PluginName:
+				err := removeduplicates.ValidateRemoveDuplicatesArgs(pluginConfig.Args.(*removeduplicates.RemoveDuplicatesArgs))
+				errorsInProfiles = setErrorsInProfiles(err, profile.Name, errorsInProfiles)
+			case nodeutilization.LowNodeUtilizationPluginName:
+				err := nodeutilization.ValidateLowNodeUtilizationArgs(pluginConfig.Args.(*nodeutilization.LowNodeUtilizationArgs))
+				errorsInProfiles = setErrorsInProfiles(err, profile.Name, errorsInProfiles)
+			case nodeutilization.HighNodeUtilizationPluginName:
+				err := nodeutilization.ValidateHighNodeUtilizationArgs(pluginConfig.Args.(*nodeutilization.HighNodeUtilizationArgs))
+				errorsInProfiles = setErrorsInProfiles(err, profile.Name, errorsInProfiles)
+			case removepodsviolatinginterpodantiaffinity.PluginName:
+				err := removepodsviolatinginterpodantiaffinity.ValidateRemovePodsViolatingInterPodAntiAffinityArgs(pluginConfig.Args.(*removepodsviolatinginterpodantiaffinity.RemovePodsViolatingInterPodAntiAffinityArgs))
+				errorsInProfiles = setErrorsInProfiles(err, profile.Name, errorsInProfiles)
+			case removepodsviolatingnodeaffinity.PluginName:
+				err := removepodsviolatingnodeaffinity.ValidateRemovePodsViolatingNodeAffinityArgs(pluginConfig.Args.(*removepodsviolatingnodeaffinity.RemovePodsViolatingNodeAffinityArgs))
+				errorsInProfiles = setErrorsInProfiles(err, profile.Name, errorsInProfiles)
+			case removepodsviolatingnodetaints.PluginName:
+				err := removepodsviolatingnodetaints.ValidateRemovePodsViolatingNodeTaintsArgs(pluginConfig.Args.(*removepodsviolatingnodetaints.RemovePodsViolatingNodeTaintsArgs))
+				errorsInProfiles = setErrorsInProfiles(err, profile.Name, errorsInProfiles)
+			case removepodsviolatingtopologyspreadconstraint.PluginName:
+				err := removepodsviolatingtopologyspreadconstraint.ValidateRemovePodsViolatingTopologySpreadConstraintArgs(pluginConfig.Args.(*removepodsviolatingtopologyspreadconstraint.RemovePodsViolatingTopologySpreadConstraintArgs))
+				errorsInProfiles = setErrorsInProfiles(err, profile.Name, errorsInProfiles)
+			case removepodshavingtoomanyrestarts.PluginName:
+				err := removepodshavingtoomanyrestarts.ValidateRemovePodsHavingTooManyRestartsArgs(pluginConfig.Args.(*removepodshavingtoomanyrestarts.RemovePodsHavingTooManyRestartsArgs))
+				errorsInProfiles = setErrorsInProfiles(err, profile.Name, errorsInProfiles)
+			case podlifetime.PluginName:
+				err := podlifetime.ValidatePodLifeTimeArgs(pluginConfig.Args.(*podlifetime.PodLifeTimeArgs))
+				errorsInProfiles = setErrorsInProfiles(err, profile.Name, errorsInProfiles)
+			case removefailedpods.PluginName:
+				err := removefailedpods.ValidateRemoveFailedPodsArgs(pluginConfig.Args.(*removefailedpods.RemoveFailedPodsArgs))
+				errorsInProfiles = setErrorsInProfiles(err, profile.Name, errorsInProfiles)
+			default:
+				// For now erroing out on unexpected plugin names,
+				// TODO: call validations for any registered plugin,
+				// including out-of-tree plugins
+				err := fmt.Errorf("unexpected plugin name")
+				errorsInProfiles = setErrorsInProfiles(err, profile.Name, errorsInProfiles)
+			}
 		}
 	}
+	if errorsInProfiles != nil {
+		return errorsInProfiles
+	}
 	return nil
+}
+
+func setErrorsInProfiles(err error, profileName string, errorsInProfiles error) error {
+	if err != nil {
+		if errorsInProfiles == nil {
+			errorsInProfiles = fmt.Errorf("in profile %s: %s", profileName, err.Error())
+		} else {
+			errorsInProfiles = fmt.Errorf("%w: %s", errorsInProfiles, fmt.Sprintf("in profile %s: %s", profileName, err.Error()))
+		}
+	}
+	return errorsInProfiles
 }
 
 func strategiesToProfiles(strategies v1alpha1.StrategyList) (*[]v1alpha2.Profile, error) {
 	var profiles []v1alpha2.Profile
 	for name, strategy := range strategies {
 		switch name {
-		case "RemoveDuplicates":
+		case removeduplicates.PluginName:
 			removeduplicatesArgs := convertRemoveDuplicatesArgs(strategy.Params)
 			profile := strategyToProfileWithBalancePlugin(removeduplicatesArgs, name, strategy)
+			profile.Name = removeduplicates.PluginName
 			if len(profile.PluginConfig) > 0 {
 				profiles = append(profiles, profile)
 			}
-		case "LowNodeUtilization":
+		case nodeutilization.LowNodeUtilizationPluginName:
 			lowNodeUtilizationArgs := convertLowNodeUtilizationArgs(strategy.Params)
 			profile := strategyToProfileWithBalancePlugin(lowNodeUtilizationArgs, name, strategy)
+			profile.Name = nodeutilization.LowNodeUtilizationPluginName
 			if len(profile.PluginConfig) > 0 {
 				profiles = append(profiles, profile)
 			}
-		case "HighNodeUtilization":
+		case nodeutilization.HighNodeUtilizationPluginName:
 			highNodeUtilizationArgs := convertHighNodeUtilizationArgs(strategy.Params)
 			profile := strategyToProfileWithBalancePlugin(highNodeUtilizationArgs, name, strategy)
+			profile.Name = nodeutilization.HighNodeUtilizationPluginName
 			if len(profile.PluginConfig) > 0 {
 				profiles = append(profiles, profile)
 			}
-		case "RemovePodsViolatingInterPodAntiAffinity":
+		case removepodsviolatinginterpodantiaffinity.PluginName:
 			removePodsViolatingInterPodAntiAffinityArgs := convertRemovePodsViolatingInterPodAntiAffinityArgs(strategy.Params)
 			profile := strategyToProfileWithDeschedulePlugin(removePodsViolatingInterPodAntiAffinityArgs, name, strategy)
+			profile.Name = removepodsviolatinginterpodantiaffinity.PluginName
 			if len(profile.PluginConfig) > 0 {
 				profiles = append(profiles, profile)
 			}
-		case "RemovePodsViolatingNodeAffinity":
+		case removepodsviolatingnodeaffinity.PluginName:
 			removePodsViolatingNodeAffinityArgs := convertRemovePodsViolatingNodeAffinityArgs(strategy.Params)
 			profile := strategyToProfileWithDeschedulePlugin(removePodsViolatingNodeAffinityArgs, name, strategy)
+			profile.Name = removepodsviolatingnodeaffinity.PluginName
 			if len(profile.PluginConfig) > 0 {
 				profiles = append(profiles, profile)
 			}
-		case "RemovePodsViolatingNodeTaints":
+		case removepodsviolatingnodetaints.PluginName:
 			removePodsViolatingNodeTaintsArgs := convertRemovePodsViolatingNodeTaintsArgs(strategy.Params)
 			profile := strategyToProfileWithDeschedulePlugin(removePodsViolatingNodeTaintsArgs, name, strategy)
+			profile.Name = removepodsviolatingnodetaints.PluginName
 			if len(profile.PluginConfig) > 0 {
 				profiles = append(profiles, profile)
 			}
-		case "RemovePodsViolatingTopologySpreadConstraint":
+		case removepodsviolatingtopologyspreadconstraint.PluginName:
 			removePodsViolatingTopologySpreadConstraintArgs := convertRemovePodsViolatingTopologySpreadConstraintArgs(strategy.Params)
 			profile := strategyToProfileWithBalancePlugin(removePodsViolatingTopologySpreadConstraintArgs, name, strategy)
+			profile.Name = removepodsviolatingtopologyspreadconstraint.PluginName
 			if len(profile.PluginConfig) > 0 {
 				profiles = append(profiles, profile)
 			}
-		case "RemovePodsHavingTooManyRestarts":
+		case removepodshavingtoomanyrestarts.PluginName:
 			removePodsHavingTooManyRestartsArgs := convertRemovePodsHavingTooManyRestartsArgs(strategy.Params)
 			profile := strategyToProfileWithDeschedulePlugin(removePodsHavingTooManyRestartsArgs, name, strategy)
+			profile.Name = removepodshavingtoomanyrestarts.PluginName
 			if len(profile.PluginConfig) > 0 {
 				profiles = append(profiles, profile)
 			}
-		case "PodLifeTime":
+		case podlifetime.PluginName:
 			podLifeTimeArgs := convertPodLifeTimeArgs(strategy.Params)
 			profile := strategyToProfileWithDeschedulePlugin(podLifeTimeArgs, name, strategy)
+			profile.Name = podlifetime.PluginName
 			if len(profile.PluginConfig) > 0 {
 				profiles = append(profiles, profile)
 			}
-		case "RemoveFailedPods":
+		case removefailedpods.PluginName:
 			RemoveFailedPodsArgs := convertRemoveFailedPodsArgs(strategy.Params)
 			profile := strategyToProfileWithDeschedulePlugin(RemoveFailedPodsArgs, name, strategy)
+			profile.Name = removefailedpods.PluginName
 			if len(profile.PluginConfig) > 0 {
 				profiles = append(profiles, profile)
 			}
@@ -240,23 +305,27 @@ func strategiesToProfiles(strategies v1alpha1.StrategyList) (*[]v1alpha2.Profile
 			return nil, fmt.Errorf("could not process strategy: %s", string(name))
 		}
 	}
+	// easier to test and to know what to expect if it is sorted
+	// (accessing the map with 'for key, val := range map' can start with any of the keys)
+	profiles = sortProfiles(profiles)
 	return &profiles, nil
+}
+
+func sortProfiles(profiles []v1alpha2.Profile) []v1alpha2.Profile {
+	sort.Slice(profiles, func(i, j int) bool {
+		return profiles[i].Name < profiles[j].Name
+	})
+	return profiles
 }
 
 func strategyToProfileWithBalancePlugin(args runtime.Object, name v1alpha1.StrategyName, strategy v1alpha1.DeschedulerStrategy) v1alpha2.Profile {
 	var profile v1alpha2.Profile
 	newPluginConfig := configurePlugin(args, string(name))
-	if !hasPluginConfigsWithSameName(newPluginConfig, profile.PluginConfig) {
-		profile.PluginConfig = append(profile.PluginConfig, newPluginConfig)
-	}
+	profile.PluginConfig = append(profile.PluginConfig, newPluginConfig)
 	if strategy.Enabled {
-		if !hasIdenticalPlugins(string(name), profile.Plugins.Balance.Enabled) {
-			profile.Plugins.Balance.Enabled = append(profile.Plugins.Balance.Enabled, string(name))
-		}
+		profile.Plugins.Balance.Enabled = append(profile.Plugins.Balance.Enabled, string(name))
 	} else {
-		if !hasIdenticalPlugins(string(name), profile.Plugins.Balance.Disabled) {
-			profile.Plugins.Balance.Disabled = append(profile.Plugins.Balance.Enabled, string(name))
-		}
+		profile.Plugins.Balance.Disabled = append(profile.Plugins.Balance.Enabled, string(name))
 	}
 	return profile
 }
@@ -264,22 +333,16 @@ func strategyToProfileWithBalancePlugin(args runtime.Object, name v1alpha1.Strat
 func strategyToProfileWithDeschedulePlugin(args runtime.Object, name v1alpha1.StrategyName, strategy v1alpha1.DeschedulerStrategy) v1alpha2.Profile {
 	var profile v1alpha2.Profile
 	newPluginConfig := configurePlugin(args, string(name))
-	if !hasPluginConfigsWithSameName(newPluginConfig, profile.PluginConfig) {
-		profile.PluginConfig = append(profile.PluginConfig, newPluginConfig)
-	}
+	profile.PluginConfig = append(profile.PluginConfig, newPluginConfig)
 	if strategy.Enabled {
-		if !hasIdenticalPlugins(string(name), profile.Plugins.Balance.Enabled) {
-			profile.Plugins.Deschedule.Enabled = append(profile.Plugins.Deschedule.Enabled, string(name))
-		}
+		profile.Plugins.Deschedule.Enabled = append(profile.Plugins.Deschedule.Enabled, string(name))
 	} else {
-		if !hasIdenticalPlugins(string(name), profile.Plugins.Balance.Disabled) {
-			profile.Plugins.Deschedule.Disabled = append(profile.Plugins.Deschedule.Enabled, string(name))
-		}
+		profile.Plugins.Deschedule.Disabled = append(profile.Plugins.Deschedule.Enabled, string(name))
 	}
 	return profile
 }
 
-func hasIdenticalPlugins(newPluginName string, pluginSet []string) bool {
+func hasPlugin(newPluginName string, pluginSet []string) bool {
 	for _, pluginName := range pluginSet {
 		if newPluginName == pluginName {
 			return true
@@ -306,7 +369,9 @@ func configurePlugin(args runtime.Object, name string) v1alpha2.PluginConfig {
 
 func convertRemoveDuplicatesArgs(params *v1alpha1.StrategyParameters) *removeduplicates.RemoveDuplicatesArgs {
 	removeduplicatesArgs := &removeduplicates.RemoveDuplicatesArgs{}
-	removeduplicatesArgs.ExcludeOwnerKinds = params.RemoveDuplicates.ExcludeOwnerKinds
+	if params.RemoveDuplicates != nil {
+		removeduplicatesArgs.ExcludeOwnerKinds = params.RemoveDuplicates.ExcludeOwnerKinds
+	}
 	if params.Namespaces != nil {
 		removeduplicatesArgs.Namespaces = &api.Namespaces{
 			Include: params.Namespaces.Include,
@@ -318,16 +383,20 @@ func convertRemoveDuplicatesArgs(params *v1alpha1.StrategyParameters) *removedup
 
 func convertLowNodeUtilizationArgs(params *v1alpha1.StrategyParameters) *nodeutilization.LowNodeUtilizationArgs {
 	lowNodeUtilizationArgs := &nodeutilization.LowNodeUtilizationArgs{}
-	lowNodeUtilizationArgs.TargetThresholds = params.NodeResourceUtilizationThresholds.TargetThresholds
-	lowNodeUtilizationArgs.Thresholds = params.NodeResourceUtilizationThresholds.Thresholds
-	lowNodeUtilizationArgs.UseDeviationThresholds = params.NodeResourceUtilizationThresholds.UseDeviationThresholds
-	lowNodeUtilizationArgs.NumberOfNodes = params.NodeResourceUtilizationThresholds.NumberOfNodes
+	if params.NodeResourceUtilizationThresholds != nil {
+		lowNodeUtilizationArgs.TargetThresholds = params.NodeResourceUtilizationThresholds.TargetThresholds
+		lowNodeUtilizationArgs.Thresholds = params.NodeResourceUtilizationThresholds.Thresholds
+		lowNodeUtilizationArgs.UseDeviationThresholds = params.NodeResourceUtilizationThresholds.UseDeviationThresholds
+		lowNodeUtilizationArgs.NumberOfNodes = params.NodeResourceUtilizationThresholds.NumberOfNodes
+	}
 	return lowNodeUtilizationArgs
 }
 
 func convertHighNodeUtilizationArgs(params *v1alpha1.StrategyParameters) *nodeutilization.HighNodeUtilizationArgs {
 	highNodeUtilizationArgs := &nodeutilization.HighNodeUtilizationArgs{}
-	highNodeUtilizationArgs.NumberOfNodes = params.NodeResourceUtilizationThresholds.NumberOfNodes
+	if params.NodeResourceUtilizationThresholds != nil {
+		highNodeUtilizationArgs.NumberOfNodes = params.NodeResourceUtilizationThresholds.NumberOfNodes
+	}
 	return highNodeUtilizationArgs
 }
 
@@ -391,8 +460,10 @@ func convertRemovePodsHavingTooManyRestartsArgs(params *v1alpha1.StrategyParamet
 		}
 	}
 	removePodsHavingTooManyRestartsArgs.LabelSelector = params.LabelSelector
-	removePodsHavingTooManyRestartsArgs.PodRestartThreshold = params.PodsHavingTooManyRestarts.PodRestartThreshold
-	removePodsHavingTooManyRestartsArgs.IncludingInitContainers = params.PodsHavingTooManyRestarts.IncludingInitContainers
+	if params.PodsHavingTooManyRestarts != nil {
+		removePodsHavingTooManyRestartsArgs.PodRestartThreshold = params.PodsHavingTooManyRestarts.PodRestartThreshold
+		removePodsHavingTooManyRestartsArgs.IncludingInitContainers = params.PodsHavingTooManyRestarts.IncludingInitContainers
+	}
 	return removePodsHavingTooManyRestartsArgs
 }
 
@@ -405,8 +476,10 @@ func convertPodLifeTimeArgs(params *v1alpha1.StrategyParameters) *podlifetime.Po
 		}
 	}
 	podLifeTimeArgs.LabelSelector = params.LabelSelector
-	podLifeTimeArgs.MaxPodLifeTimeSeconds = params.PodLifeTime.MaxPodLifeTimeSeconds
-	podLifeTimeArgs.States = params.PodLifeTime.States
+	if params.PodLifeTime != nil {
+		podLifeTimeArgs.MaxPodLifeTimeSeconds = params.PodLifeTime.MaxPodLifeTimeSeconds
+		podLifeTimeArgs.States = params.PodLifeTime.States
+	}
 	return podLifeTimeArgs
 }
 
@@ -419,9 +492,11 @@ func convertRemoveFailedPodsArgs(params *v1alpha1.StrategyParameters) *removefai
 		}
 	}
 	removeFailedPodsArgs.LabelSelector = params.LabelSelector
-	removeFailedPodsArgs.ExcludeOwnerKinds = params.FailedPods.ExcludeOwnerKinds
-	removeFailedPodsArgs.MinPodLifetimeSeconds = params.FailedPods.MinPodLifetimeSeconds
-	removeFailedPodsArgs.Reasons = params.FailedPods.Reasons
-	removeFailedPodsArgs.IncludingInitContainers = params.FailedPods.IncludingInitContainers
+	if params.FailedPods != nil {
+		removeFailedPodsArgs.ExcludeOwnerKinds = params.FailedPods.ExcludeOwnerKinds
+		removeFailedPodsArgs.MinPodLifetimeSeconds = params.FailedPods.MinPodLifetimeSeconds
+		removeFailedPodsArgs.Reasons = params.FailedPods.Reasons
+		removeFailedPodsArgs.IncludingInitContainers = params.FailedPods.IncludingInitContainers
+	}
 	return removeFailedPodsArgs
 }
