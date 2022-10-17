@@ -18,16 +18,20 @@ package descheduler
 
 import (
 	"fmt"
-	"reflect"
 	"testing"
 
+	"sigs.k8s.io/descheduler/pkg/descheduler/scheme"
+
+	"github.com/google/go-cmp/cmp"
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilpointer "k8s.io/utils/pointer"
 	"sigs.k8s.io/descheduler/pkg/api"
 	"sigs.k8s.io/descheduler/pkg/api/v1alpha1"
 	"sigs.k8s.io/descheduler/pkg/api/v1alpha2"
+	"sigs.k8s.io/descheduler/pkg/framework/plugins/defaultevictor"
 	"sigs.k8s.io/descheduler/pkg/framework/plugins/nodeutilization"
+	"sigs.k8s.io/descheduler/pkg/framework/plugins/podlifetime"
 	"sigs.k8s.io/descheduler/pkg/framework/plugins/removeduplicates"
 	"sigs.k8s.io/descheduler/pkg/framework/plugins/removefailedpods"
 	"sigs.k8s.io/descheduler/pkg/framework/plugins/removepodshavingtoomanyrestarts"
@@ -173,8 +177,8 @@ func TestConvertRemoveFailedPodsArgs(t *testing.T) {
 	for _, tc := range testCases {
 		t.Run(tc.description, func(t *testing.T) {
 			result := convertRemoveFailedPodsArgs(tc.params)
-			if !reflect.DeepEqual(result, tc.result) {
-				t.Errorf("test '%s' failed. Results are not deep equal", tc.description)
+			if diff := cmp.Diff(tc.result, result); diff != "" {
+				t.Errorf("test '%s' failed. Results are not deep equal. mismatch (-want +got):\n%s", tc.description, diff)
 			}
 		})
 	}
@@ -249,8 +253,8 @@ func TestStrategyToProfileWithDeschedulePlugin(t *testing.T) {
 	for _, tc := range testCases {
 		t.Run(tc.description, func(t *testing.T) {
 			result := strategyToProfileWithDeschedulePlugin(tc.args, tc.name, tc.strategy)
-			if !reflect.DeepEqual(result, tc.result) {
-				t.Errorf("test '%s' failed. Results are not deep equal", tc.description)
+			if diff := cmp.Diff(tc.result, result); diff != "" {
+				t.Errorf("test '%s' failed. Results are not deep equal. mismatch (-want +got):\n%s", tc.description, diff)
 			}
 		})
 	}
@@ -539,8 +543,9 @@ func TestStrategiesToProfiles(t *testing.T) {
 					t.Errorf("unexpected error: %s", err.Error())
 				}
 			}
-			if !reflect.DeepEqual(result, tc.result) && err == nil {
-				t.Errorf("test '%s' failed. Results are not deep equal", tc.description)
+			diff := cmp.Diff(tc.result, result)
+			if diff != "" && err == nil {
+				t.Errorf("test '%s' failed. Results are not deep equal. mismatch (-want +got):\n%s", tc.description, diff)
 			}
 		})
 	}
@@ -603,6 +608,95 @@ func TestValidateDeschedulerConfiguration(t *testing.T) {
 			result := validateDeschedulerConfiguration(tc.deschedulerPolicy)
 			if result.Error() != tc.result.Error() {
 				t.Errorf("test '%s' failed. expected \n'%s', got \n'%s'", tc.description, tc.result, result)
+			}
+		})
+	}
+}
+
+func TestDecodeVersionedPolicy(t *testing.T) {
+
+	type testCase struct {
+		description string
+		policy      []byte
+		err         error
+		result      *v1alpha2.DeschedulerPolicy
+	}
+	testCases := []testCase{
+		{
+			description: "simple conversion",
+			policy: []byte(`apiVersion: "descheduler/v1alpha1"
+kind: "DeschedulerPolicy"
+strategies:
+  "PodLifeTime":
+    enabled: true
+    params:
+      podLifeTime:
+        maxPodLifeTimeSeconds: 5
+      namespaces:
+        include:
+          - "testleaderelection-a"
+
+`),
+			result: &v1alpha2.DeschedulerPolicy{
+				TypeMeta: v1.TypeMeta{
+					Kind:       "DeschedulerPolicy",
+					APIVersion: "descheduler/v1alpha2",
+				},
+				Profiles: []v1alpha2.Profile{
+					{
+						Name: podlifetime.PluginName,
+						PluginConfig: []v1alpha2.PluginConfig{
+							{
+								Name: podlifetime.PluginName,
+								Args: &podlifetime.PodLifeTimeArgs{
+									Namespaces: &api.Namespaces{
+										Include: []string{"testleaderelection-a"},
+									},
+									MaxPodLifeTimeSeconds: utilpointer.Uint(5),
+								},
+							},
+							{
+								Name: defaultevictor.PluginName,
+								Args: &defaultevictor.DefaultEvictorArgs{},
+							},
+						},
+						Plugins: v1alpha2.Plugins{
+							Evict: v1alpha2.PluginSet{
+								Enabled: []string{defaultevictor.PluginName},
+							},
+							Filter: v1alpha2.PluginSet{
+								Enabled: []string{defaultevictor.PluginName},
+							},
+							PreEvictionFilter: v1alpha2.PluginSet{
+								Enabled: []string{defaultevictor.PluginName},
+							},
+							Deschedule: v1alpha2.PluginSet{
+								Enabled: []string{podlifetime.PluginName},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.description, func(t *testing.T) {
+			// "apiVersion: \"descheduler/v1alpha1\"\nkind: \"DeschedulerPolicy\"\nstr"
+
+			decoder := scheme.Codecs.UniversalDecoder(v1alpha1.SchemeGroupVersion, v1alpha2.SchemeGroupVersion)
+			obj, err := runtime.Decode(decoder, tc.policy)
+			result, err := decodeVersionedPolicy(obj.GetObjectKind(), decoder, tc.policy)
+			if err != nil {
+				if tc.err == nil {
+					t.Errorf("unexpected error: %s.", err.Error())
+				} else {
+					t.Errorf("unexpected error: %s. Was expecting %s", err.Error(), tc.err.Error())
+				}
+			}
+			diff := cmp.Diff(tc.result, result)
+			if diff != "" && err == nil {
+				t.Errorf("test '%s' failed. Results are not deep equal. mismatch (-want +got):\n%s", tc.description, diff)
 			}
 		})
 	}

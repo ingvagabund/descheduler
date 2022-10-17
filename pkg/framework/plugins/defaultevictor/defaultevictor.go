@@ -63,7 +63,7 @@ func HaveEvictAnnotation(pod *v1.Pod) bool {
 
 // New builds plugin from its arguments while passing a handle
 func New(args runtime.Object, handle framework.Handle) (framework.Plugin, error) {
-	defaultEvictorArgs, err := validateDefaultEvictorArgs(args)
+	defaultEvictorArgs, err := ValidateDefaultEvictorArgs(args)
 	if err != nil {
 		return nil, err
 	}
@@ -146,7 +146,7 @@ func New(args runtime.Object, handle framework.Handle) (framework.Plugin, error)
 	return ev, nil
 }
 
-func validateDefaultEvictorArgs(args runtime.Object) (*DefaultEvictorArgs, error) {
+func ValidateDefaultEvictorArgs(args runtime.Object) (*DefaultEvictorArgs, error) {
 	defaultEvictorArgs, ok := args.(*DefaultEvictorArgs)
 	if !ok {
 		return nil, fmt.Errorf("want args to be of type defaultEvictorFilterArgs, got %T", args)

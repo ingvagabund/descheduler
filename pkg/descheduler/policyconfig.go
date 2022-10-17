@@ -21,6 +21,7 @@ import (
 	"io/ioutil"
 	"sort"
 
+	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/klog/v2"
@@ -99,7 +100,10 @@ func convertV1ToV2Policy(in *v1alpha1.DeschedulerPolicy) (*v1alpha2.DeschedulerP
 	profilesWithDefaultEvictor := policyToDefaultEvictor(in, *profiles)
 
 	return &v1alpha2.DeschedulerPolicy{
-		TypeMeta:                       *&in.TypeMeta,
+		TypeMeta: v1.TypeMeta{
+			Kind:       "DeschedulerPolicy",
+			APIVersion: "descheduler/v1alpha2",
+		},
 		Profiles:                       *profilesWithDefaultEvictor,
 		NodeSelector:                   in.NodeSelector,
 		MaxNoOfPodsToEvictPerNode:      in.MaxNoOfPodsToEvictPerNode,
@@ -200,6 +204,9 @@ func validateDeschedulerConfiguration(in v1alpha2.DeschedulerPolicy) error {
 				errorsInProfiles = setErrorsInProfiles(err, profile.Name, errorsInProfiles)
 			case removefailedpods.PluginName:
 				err := removefailedpods.ValidateRemoveFailedPodsArgs(pluginConfig.Args.(*removefailedpods.RemoveFailedPodsArgs))
+				errorsInProfiles = setErrorsInProfiles(err, profile.Name, errorsInProfiles)
+			case defaultevictor.PluginName:
+				_, err := defaultevictor.ValidateDefaultEvictorArgs(pluginConfig.Args.(*defaultevictor.DefaultEvictorArgs))
 				errorsInProfiles = setErrorsInProfiles(err, profile.Name, errorsInProfiles)
 			default:
 				// For now erroing out on unexpected plugin names,
