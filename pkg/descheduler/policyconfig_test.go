@@ -678,12 +678,79 @@ strategies:
 				},
 			},
 		},
+		// 		{
+		// 			description: "no conversion needed",
+		// 			policy: []byte(`apiVersion: "descheduler/v1alpha2"
+		// kind: "DeschedulerPolicy"
+		// profiles:
+		//   - name: ProfileName
+		//     pluginConfig:
+		//     - name: "DefaultEvictor"
+		//       args:
+		//         evictSystemCriticalPods: true
+		//         evictFailedBarePods: true
+		//         evictLocalStoragePods: true
+		//         nodeFit: true
+		//     - name: "PodsHavingTooManyRestarts"
+		//       args:
+		//         podRestartThreshold: 100
+		//         includingInitContainers: true
+		//     plugins:
+		//       filter:
+		//         enabled:
+		//           - "DefaultEvictor"
+		//       deschedule:
+		//         enabled:
+		//           - "RemovePodsHavingTooManyRestarts"
+		// `),
+		// 			result: &v1alpha2.DeschedulerPolicy{
+		// 				TypeMeta: v1.TypeMeta{
+		// 					Kind:       "DeschedulerPolicy",
+		// 					APIVersion: "descheduler/v1alpha2",
+		// 				},
+		// 				Profiles: []v1alpha2.Profile{
+		// 					{
+		// 						Name: podlifetime.PluginName,
+		// 						PluginConfig: []v1alpha2.PluginConfig{
+		// 							{
+		// 								Name: removepodshavingtoomanyrestarts.PluginName,
+		// 								Args: &removepodshavingtoomanyrestarts.RemovePodsHavingTooManyRestartsArgs{
+		// 									PodRestartThreshold:     100,
+		// 									IncludingInitContainers: true,
+		// 								},
+		// 							},
+		// 							{
+		// 								Name: defaultevictor.PluginName,
+		// 								Args: &defaultevictor.DefaultEvictorArgs{
+		// 									EvictSystemCriticalPods: true,
+		// 									EvictFailedBarePods:     true,
+		// 									EvictLocalStoragePods:   true,
+		// 									NodeFit:                 true,
+		// 								},
+		// 							},
+		// 						},
+		// 						Plugins: v1alpha2.Plugins{
+		// 							Evict: v1alpha2.PluginSet{
+		// 								Enabled: []string{defaultevictor.PluginName},
+		// 							},
+		// 							Filter: v1alpha2.PluginSet{
+		// 								Enabled: []string{defaultevictor.PluginName},
+		// 							},
+		// 							PreEvictionFilter: v1alpha2.PluginSet{
+		// 								Enabled: []string{defaultevictor.PluginName},
+		// 							},
+		// 							Deschedule: v1alpha2.PluginSet{
+		// 								Enabled: []string{removepodshavingtoomanyrestarts.PluginName},
+		// 							},
+		// 						},
+		// 					},
+		// 				},
+		// 			},
+		// 		},
 	}
 
 	for _, tc := range testCases {
 		t.Run(tc.description, func(t *testing.T) {
-			// "apiVersion: \"descheduler/v1alpha1\"\nkind: \"DeschedulerPolicy\"\nstr"
-
 			decoder := scheme.Codecs.UniversalDecoder(v1alpha1.SchemeGroupVersion, v1alpha2.SchemeGroupVersion)
 			obj, err := runtime.Decode(decoder, tc.policy)
 			result, err := decodeVersionedPolicy(obj.GetObjectKind(), decoder, tc.policy)

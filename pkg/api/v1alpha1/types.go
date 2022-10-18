@@ -90,8 +90,6 @@ type StrategyParameters struct {
 	ExcludedTaints                    []string                           `json:"excludedTaints,omitempty"`
 }
 
-type Percentage float64
-
 type NodeResourceUtilizationThresholds struct {
 	UseDeviationThresholds bool                   `json:"useDeviationThresholds,omitempty"`
 	Thresholds             api.ResourceThresholds `json:"thresholds,omitempty"`

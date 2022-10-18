@@ -140,8 +140,8 @@ func policyToDefaultEvictor(in *v1alpha1.DeschedulerPolicy, profiles []v1alpha2.
 
 func setDefaults(in v1alpha2.DeschedulerPolicy) *v1alpha2.DeschedulerPolicy {
 	for idx, profile := range in.Profiles {
-		// Most defaults are being set at runtime, for exmaple in pkg/framework/plugins/nodeutilization/defaults.go
-		// If we need to set defaults coming from loadtime we do it here
+		// Most defaults are being set, for example in pkg/framework/plugins/nodeutilization/defaults.go
+		// If we need to set defaults coming from loadtime in each profile we do it here
 		in.Profiles[idx] = setDefaultEvictor(profile)
 	}
 	return &in
@@ -150,6 +150,34 @@ func setDefaults(in v1alpha2.DeschedulerPolicy) *v1alpha2.DeschedulerPolicy {
 func setDefaultEvictor(profile v1alpha2.Profile) v1alpha2.Profile {
 	if len(profile.Plugins.Filter.Enabled) == 0 {
 		profile.Plugins.Filter.Enabled = append(profile.Plugins.Filter.Enabled, defaultevictor.PluginName)
+		profile.PluginConfig = append(
+			profile.PluginConfig, v1alpha2.PluginConfig{
+				Name: defaultevictor.PluginName,
+				Args: &defaultevictor.DefaultEvictorArgs{
+					EvictLocalStoragePods:   false,
+					EvictSystemCriticalPods: false,
+					IgnorePvcPods:           false,
+					EvictFailedBarePods:     false,
+				},
+			},
+		)
+	}
+	if len(profile.Plugins.Evict.Enabled) == 0 {
+		profile.Plugins.Evict.Enabled = append(profile.Plugins.Evict.Enabled, defaultevictor.PluginName)
+		profile.PluginConfig = append(
+			profile.PluginConfig, v1alpha2.PluginConfig{
+				Name: defaultevictor.PluginName,
+				Args: &defaultevictor.DefaultEvictorArgs{
+					EvictLocalStoragePods:   false,
+					EvictSystemCriticalPods: false,
+					IgnorePvcPods:           false,
+					EvictFailedBarePods:     false,
+				},
+			},
+		)
+	}
+	if len(profile.Plugins.PreEvictionFilter.Enabled) == 0 {
+		profile.Plugins.PreEvictionFilter.Enabled = append(profile.Plugins.PreEvictionFilter.Enabled, defaultevictor.PluginName)
 		profile.PluginConfig = append(
 			profile.PluginConfig, v1alpha2.PluginConfig{
 				Name: defaultevictor.PluginName,
