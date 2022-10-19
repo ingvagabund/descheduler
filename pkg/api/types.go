@@ -17,6 +17,8 @@ limitations under the License.
 package api
 
 import (
+	"sort"
+
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -40,6 +42,13 @@ type DeschedulerPolicy struct {
 	MaxNoOfPodsToEvictPerNamespace *uint `json:"maxNoOfPodsToEvictPerNamespace,omitempty"`
 }
 
+func (p *DeschedulerPolicy) SortProfilesByName() []Profile {
+	sort.Slice(p.Profiles, func(i, j int) bool {
+		return p.Profiles[i].Name < p.Profiles[j].Name
+	})
+	return p.Profiles
+}
+
 type Profile struct {
 	Name         string         `json:"name"`
 	PluginConfig []PluginConfig `json:"pluginConfig"`
@@ -57,8 +66,8 @@ type Plugins struct {
 }
 
 type PluginConfig struct {
-	Name string         `json:"name"`
-	Args runtime.Object `json:"args"`
+	Name string               `json:"name"`
+	Args runtime.RawExtension `json:"args"`
 }
 
 type PluginSet struct {

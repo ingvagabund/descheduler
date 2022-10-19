@@ -38,7 +38,6 @@ import (
 	"sigs.k8s.io/descheduler/cmd/descheduler/app/options"
 	"sigs.k8s.io/descheduler/metrics"
 	"sigs.k8s.io/descheduler/pkg/api"
-	"sigs.k8s.io/descheduler/pkg/api/v1alpha2"
 	"sigs.k8s.io/descheduler/pkg/descheduler/client"
 	"sigs.k8s.io/descheduler/pkg/descheduler/evictions"
 	eutils "sigs.k8s.io/descheduler/pkg/descheduler/evictions/utils"
@@ -236,7 +235,7 @@ func (hi *handleImpl) Evictor() framework.Evictor {
 	return hi.evictor
 }
 
-func RunDeschedulerStrategies(ctx context.Context, rs *options.DeschedulerServer, deschedulerPolicy *v1alpha2.DeschedulerPolicy, evictionPolicyGroupVersion string) error {
+func RunDeschedulerStrategies(ctx context.Context, rs *options.DeschedulerServer, deschedulerPolicy *api.DeschedulerPolicy, evictionPolicyGroupVersion string) error {
 	sharedInformerFactory := informers.NewSharedInformerFactory(rs.Client, 0)
 	podInformer := sharedInformerFactory.Core().V1().Pods().Informer()
 	podLister := sharedInformerFactory.Core().V1().Pods().Lister()
@@ -330,7 +329,7 @@ func RunDeschedulerStrategies(ctx context.Context, rs *options.DeschedulerServer
 			_, filterConfigs, _ := getSortersFiltersAndEvictorConfigFromProfile(profile)
 			var filterArgs []runtime.Object
 			for _, filterConfig := range filterConfigs {
-				filterArgs = append(filterArgs, filterConfig.Args.(*defaultevictor.DefaultEvictorArgs))
+				filterArgs = append(filterArgs, filterConfig.Args.Object.(*defaultevictor.DefaultEvictorArgs))
 			}
 			evictorFilters, err := buildEvictorFilterPlugins(filterArgs, rs.Client, getPodsAssignedToNode, sharedInformerFactory)
 			if err != nil {
@@ -378,7 +377,7 @@ func RunDeschedulerStrategies(ctx context.Context, rs *options.DeschedulerServer
 	return nil
 }
 
-func runPlugin(ctx context.Context, evictorFilters []framework.EvictorPlugin, handle *handleImpl, profile v1alpha2.Profile, pluginName string, filterArgs []runtime.Object, clientSet clientset.Interface, getPodsAssignedToNode podutil.GetPodsAssignedToNodeFunc, sharedInformerFactory informers.SharedInformerFactory, podEvictor *evictions.PodEvictor, nodes []*v1.Node) error {
+func runPlugin(ctx context.Context, evictorFilters []framework.EvictorPlugin, handle *handleImpl, profile api.Profile, pluginName string, filterArgs []runtime.Object, clientSet clientset.Interface, getPodsAssignedToNode podutil.GetPodsAssignedToNodeFunc, sharedInformerFactory informers.SharedInformerFactory, podEvictor *evictions.PodEvictor, nodes []*v1.Node) error {
 	pluginConfig := getPluginConfig(pluginName, profile.PluginConfig)
 	if pluginConfig == nil {
 		return fmt.Errorf("could not get config for plugin: %s", pluginName)
@@ -390,7 +389,7 @@ func runPlugin(ctx context.Context, evictorFilters []framework.EvictorPlugin, ha
 	// (See discussion thread https://github.com/kubernetes-sigs/descheduler/pull/885#discussion_r919962292)
 	childCtx := context.WithValue(ctx, "strategyName", string(pluginName))
 	if pgFnc, exists := pluginsMap[string(pluginName)]; exists {
-		pgFnc(childCtx, nodes, PluginArgs, handle)
+		pgFnc(childCtx, nodes, PluginArgs.Object, handle)
 	}
 	return nil
 }
@@ -414,7 +413,7 @@ func buildEvictorFilterPlugins(filterArgs []runtime.Object, clientSet clientset.
 	return evictorFilters, nil
 }
 
-func getPluginConfig(pluginName string, pluginConfigs []v1alpha2.PluginConfig) *v1alpha2.PluginConfig {
+func getPluginConfig(pluginName string, pluginConfigs []api.PluginConfig) *api.PluginConfig {
 	for _, pluginConfig := range pluginConfigs {
 		if pluginConfig.Name == pluginName {
 			return &pluginConfig
@@ -423,10 +422,10 @@ func getPluginConfig(pluginName string, pluginConfigs []v1alpha2.PluginConfig) *
 	return nil
 }
 
-func getSortersFiltersAndEvictorConfigFromProfile(profile v1alpha2.Profile) (v1alpha2.PluginConfig, []v1alpha2.PluginConfig, []v1alpha2.PluginConfig) {
-	var evictorConfig v1alpha2.PluginConfig
-	var filterConfigs []v1alpha2.PluginConfig
-	var preEvictionFilterConfigs []v1alpha2.PluginConfig
+func getSortersFiltersAndEvictorConfigFromProfile(profile api.Profile) (api.PluginConfig, []api.PluginConfig, []api.PluginConfig) {
+	var evictorConfig api.PluginConfig
+	var filterConfigs []api.PluginConfig
+	var preEvictionFilterConfigs []api.PluginConfig
 
 	evictorPluginName := profile.Plugins.Evict.Enabled[0]
 	filterPluginNames := profile.Plugins.Filter.Enabled

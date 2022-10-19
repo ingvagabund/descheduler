@@ -15,13 +15,30 @@ package podlifetime
 
 import (
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"sigs.k8s.io/descheduler/pkg/api"
 )
 
+// GroupName is the group name used in this package
+const GroupName = "descheduler"
+
+// SchemeGroupVersion is group version used to register these objects
+var SchemeGroupVersion = schema.GroupVersion{Group: GroupName, Version: runtime.APIVersionInternal}
+
 var (
-	SchemeBuilder      = runtime.NewSchemeBuilder()
+	SchemeBuilder      = runtime.NewSchemeBuilder(addKnownTypes)
 	localSchemeBuilder = &SchemeBuilder
 	AddToScheme        = localSchemeBuilder.AddToScheme
 )
+
+// addKnownTypes registers known types to the given scheme
+func addKnownTypes(scheme *runtime.Scheme) error {
+	scheme.AddKnownTypes(SchemeGroupVersion,
+		&api.DeschedulerPolicy{},
+		&PodLifeTimeArgs{},
+	)
+	return nil
+}
 
 func init() {
 	// We only register manually written functions here. The registration of the

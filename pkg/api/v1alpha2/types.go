@@ -53,8 +53,8 @@ type Plugins struct {
 }
 
 type PluginConfig struct {
-	Name string         `json:"name"`
-	Args runtime.Object `json:"args"`
+	Name string               `json:"name"`
+	Args runtime.RawExtension `json:"args"`
 }
 
 type PluginSet struct {

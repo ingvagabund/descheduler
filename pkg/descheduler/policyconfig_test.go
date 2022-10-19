@@ -20,8 +20,6 @@ import (
 	"fmt"
 	"testing"
 
-	"sigs.k8s.io/descheduler/pkg/descheduler/scheme"
-
 	"github.com/google/go-cmp/cmp"
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -207,8 +205,10 @@ func TestStrategyToProfileWithDeschedulePlugin(t *testing.T) {
 				PluginConfig: []v1alpha2.PluginConfig{
 					{
 						Name: removefailedpods.PluginName,
-						Args: &removefailedpods.RemoveFailedPodsArgs{
-							MinPodLifetimeSeconds: utilpointer.Uint(3600),
+						Args: runtime.RawExtension{
+							Object: &removefailedpods.RemoveFailedPodsArgs{
+								MinPodLifetimeSeconds: utilpointer.Uint(3600),
+							},
 						},
 					},
 				},
@@ -234,8 +234,10 @@ func TestStrategyToProfileWithDeschedulePlugin(t *testing.T) {
 				PluginConfig: []v1alpha2.PluginConfig{
 					{
 						Name: removefailedpods.PluginName,
-						Args: &removefailedpods.RemoveFailedPodsArgs{
-							MinPodLifetimeSeconds: utilpointer.Uint(3600),
+						Args: runtime.RawExtension{
+							Object: &removefailedpods.RemoveFailedPodsArgs{
+								MinPodLifetimeSeconds: utilpointer.Uint(3600),
+							},
 						},
 					},
 				},
@@ -310,16 +312,18 @@ func TestStrategiesToProfiles(t *testing.T) {
 					PluginConfig: []v1alpha2.PluginConfig{
 						{
 							Name: nodeutilization.LowNodeUtilizationPluginName,
-							Args: &nodeutilization.LowNodeUtilizationArgs{
-								Thresholds: api.ResourceThresholds{
-									"cpu":    api.Percentage(20),
-									"memory": api.Percentage(20),
-									"pods":   api.Percentage(20),
-								},
-								TargetThresholds: api.ResourceThresholds{
-									"cpu":    api.Percentage(50),
-									"memory": api.Percentage(50),
-									"pods":   api.Percentage(50),
+							Args: runtime.RawExtension{
+								Object: &nodeutilization.LowNodeUtilizationArgs{
+									Thresholds: api.ResourceThresholds{
+										"cpu":    api.Percentage(20),
+										"memory": api.Percentage(20),
+										"pods":   api.Percentage(20),
+									},
+									TargetThresholds: api.ResourceThresholds{
+										"cpu":    api.Percentage(50),
+										"memory": api.Percentage(50),
+										"pods":   api.Percentage(50),
+									},
 								},
 							},
 						},
@@ -335,13 +339,15 @@ func TestStrategiesToProfiles(t *testing.T) {
 					PluginConfig: []v1alpha2.PluginConfig{
 						{
 							Name: removeduplicates.PluginName,
-							Args: &removeduplicates.RemoveDuplicatesArgs{
-								Namespaces: &api.Namespaces{
-									Include: []string{
-										"test1",
-									},
-									Exclude: []string{
-										"test2",
+							Args: runtime.RawExtension{
+								Object: &removeduplicates.RemoveDuplicatesArgs{
+									Namespaces: &api.Namespaces{
+										Include: []string{
+											"test1",
+										},
+										Exclude: []string{
+											"test2",
+										},
 									},
 								},
 							},
@@ -402,7 +408,9 @@ func TestStrategiesToProfiles(t *testing.T) {
 					PluginConfig: []v1alpha2.PluginConfig{
 						{
 							Name: nodeutilization.HighNodeUtilizationPluginName,
-							Args: &nodeutilization.HighNodeUtilizationArgs{},
+							Args: runtime.RawExtension{
+								Object: &nodeutilization.HighNodeUtilizationArgs{},
+							},
 						},
 					},
 					Plugins: v1alpha2.Plugins{
@@ -416,7 +424,9 @@ func TestStrategiesToProfiles(t *testing.T) {
 					PluginConfig: []v1alpha2.PluginConfig{
 						{
 							Name: nodeutilization.LowNodeUtilizationPluginName,
-							Args: &nodeutilization.LowNodeUtilizationArgs{},
+							Args: runtime.RawExtension{
+								Object: &nodeutilization.LowNodeUtilizationArgs{},
+							},
 						},
 					},
 					Plugins: v1alpha2.Plugins{
@@ -430,7 +440,9 @@ func TestStrategiesToProfiles(t *testing.T) {
 					PluginConfig: []v1alpha2.PluginConfig{
 						{
 							Name: removeduplicates.PluginName,
-							Args: &removeduplicates.RemoveDuplicatesArgs{},
+							Args: runtime.RawExtension{
+								Object: &removeduplicates.RemoveDuplicatesArgs{},
+							},
 						},
 					},
 					Plugins: v1alpha2.Plugins{
@@ -444,7 +456,9 @@ func TestStrategiesToProfiles(t *testing.T) {
 					PluginConfig: []v1alpha2.PluginConfig{
 						{
 							Name: removefailedpods.PluginName,
-							Args: &removefailedpods.RemoveFailedPodsArgs{},
+							Args: runtime.RawExtension{
+								Object: &removefailedpods.RemoveFailedPodsArgs{},
+							},
 						},
 					},
 					Plugins: v1alpha2.Plugins{
@@ -458,7 +472,9 @@ func TestStrategiesToProfiles(t *testing.T) {
 					PluginConfig: []v1alpha2.PluginConfig{
 						{
 							Name: removepodshavingtoomanyrestarts.PluginName,
-							Args: &removepodshavingtoomanyrestarts.RemovePodsHavingTooManyRestartsArgs{},
+							Args: runtime.RawExtension{
+								Object: &removepodshavingtoomanyrestarts.RemovePodsHavingTooManyRestartsArgs{},
+							},
 						},
 					},
 					Plugins: v1alpha2.Plugins{
@@ -472,7 +488,9 @@ func TestStrategiesToProfiles(t *testing.T) {
 					PluginConfig: []v1alpha2.PluginConfig{
 						{
 							Name: removepodsviolatinginterpodantiaffinity.PluginName,
-							Args: &removepodsviolatinginterpodantiaffinity.RemovePodsViolatingInterPodAntiAffinityArgs{},
+							Args: runtime.RawExtension{
+								Object: &removepodsviolatinginterpodantiaffinity.RemovePodsViolatingInterPodAntiAffinityArgs{},
+							},
 						},
 					},
 					Plugins: v1alpha2.Plugins{
@@ -486,7 +504,9 @@ func TestStrategiesToProfiles(t *testing.T) {
 					PluginConfig: []v1alpha2.PluginConfig{
 						{
 							Name: removepodsviolatingnodeaffinity.PluginName,
-							Args: &removepodsviolatingnodeaffinity.RemovePodsViolatingNodeAffinityArgs{},
+							Args: runtime.RawExtension{
+								Object: &removepodsviolatingnodeaffinity.RemovePodsViolatingNodeAffinityArgs{},
+							},
 						},
 					},
 					Plugins: v1alpha2.Plugins{
@@ -500,7 +520,9 @@ func TestStrategiesToProfiles(t *testing.T) {
 					PluginConfig: []v1alpha2.PluginConfig{
 						{
 							Name: removepodsviolatingnodetaints.PluginName,
-							Args: &removepodsviolatingnodetaints.RemovePodsViolatingNodeTaintsArgs{},
+							Args: runtime.RawExtension{
+								Object: &removepodsviolatingnodetaints.RemovePodsViolatingNodeTaintsArgs{},
+							},
 						},
 					},
 					Plugins: v1alpha2.Plugins{
@@ -514,7 +536,9 @@ func TestStrategiesToProfiles(t *testing.T) {
 					PluginConfig: []v1alpha2.PluginConfig{
 						{
 							Name: removepodsviolatingtopologyspreadconstraint.PluginName,
-							Args: &removepodsviolatingtopologyspreadconstraint.RemovePodsViolatingTopologySpreadConstraintArgs{},
+							Args: runtime.RawExtension{
+								Object: &removepodsviolatingtopologyspreadconstraint.RemovePodsViolatingTopologySpreadConstraintArgs{},
+							},
 						},
 					},
 					Plugins: v1alpha2.Plugins{
@@ -571,10 +595,12 @@ func TestValidateDeschedulerConfiguration(t *testing.T) {
 						PluginConfig: []v1alpha2.PluginConfig{
 							{
 								Name: removefailedpods.PluginName,
-								Args: &removefailedpods.RemoveFailedPodsArgs{
-									Namespaces: &api.Namespaces{
-										Include: []string{"test1"},
-										Exclude: []string{"test1"},
+								Args: runtime.RawExtension{
+									Object: &removefailedpods.RemoveFailedPodsArgs{
+										Namespaces: &api.Namespaces{
+											Include: []string{"test1"},
+											Exclude: []string{"test1"},
+										},
 									},
 								},
 							},
@@ -588,10 +614,12 @@ func TestValidateDeschedulerConfiguration(t *testing.T) {
 						PluginConfig: []v1alpha2.PluginConfig{
 							{
 								Name: removepodsviolatingtopologyspreadconstraint.PluginName,
-								Args: &removepodsviolatingtopologyspreadconstraint.RemovePodsViolatingTopologySpreadConstraintArgs{
-									Namespaces: &api.Namespaces{
-										Include: []string{"test1"},
-										Exclude: []string{"test1"},
+								Args: runtime.RawExtension{
+									Object: &removepodsviolatingtopologyspreadconstraint.RemovePodsViolatingTopologySpreadConstraintArgs{
+										Namespaces: &api.Namespaces{
+											Include: []string{"test1"},
+											Exclude: []string{"test1"},
+										},
 									},
 								},
 							},
@@ -619,7 +647,7 @@ func TestDecodeVersionedPolicy(t *testing.T) {
 		description string
 		policy      []byte
 		err         error
-		result      *v1alpha2.DeschedulerPolicy
+		result      *api.DeschedulerPolicy
 	}
 	testCases := []testCase{
 		{
@@ -637,40 +665,40 @@ strategies:
           - "testleaderelection-a"
 
 `),
-			result: &v1alpha2.DeschedulerPolicy{
-				TypeMeta: v1.TypeMeta{
-					Kind:       "DeschedulerPolicy",
-					APIVersion: "descheduler/v1alpha2",
-				},
-				Profiles: []v1alpha2.Profile{
+			result: &api.DeschedulerPolicy{
+				Profiles: []api.Profile{
 					{
 						Name: podlifetime.PluginName,
-						PluginConfig: []v1alpha2.PluginConfig{
+						PluginConfig: []api.PluginConfig{
 							{
 								Name: podlifetime.PluginName,
-								Args: &podlifetime.PodLifeTimeArgs{
-									Namespaces: &api.Namespaces{
-										Include: []string{"testleaderelection-a"},
+								Args: runtime.RawExtension{
+									Object: &podlifetime.PodLifeTimeArgs{
+										Namespaces: &api.Namespaces{
+											Include: []string{"testleaderelection-a"},
+										},
+										MaxPodLifeTimeSeconds: utilpointer.Uint(5),
 									},
-									MaxPodLifeTimeSeconds: utilpointer.Uint(5),
 								},
 							},
 							{
 								Name: defaultevictor.PluginName,
-								Args: &defaultevictor.DefaultEvictorArgs{},
+								Args: runtime.RawExtension{
+									Object: &defaultevictor.DefaultEvictorArgs{},
+								},
 							},
 						},
-						Plugins: v1alpha2.Plugins{
-							Evict: v1alpha2.PluginSet{
+						Plugins: api.Plugins{
+							Evict: api.PluginSet{
 								Enabled: []string{defaultevictor.PluginName},
 							},
-							Filter: v1alpha2.PluginSet{
+							Filter: api.PluginSet{
 								Enabled: []string{defaultevictor.PluginName},
 							},
-							PreEvictionFilter: v1alpha2.PluginSet{
+							PreEvictionFilter: api.PluginSet{
 								Enabled: []string{defaultevictor.PluginName},
 							},
-							Deschedule: v1alpha2.PluginSet{
+							Deschedule: api.PluginSet{
 								Enabled: []string{podlifetime.PluginName},
 							},
 						},
@@ -678,82 +706,84 @@ strategies:
 				},
 			},
 		},
-		// 		{
-		// 			description: "no conversion needed",
-		// 			policy: []byte(`apiVersion: "descheduler/v1alpha2"
-		// kind: "DeschedulerPolicy"
-		// profiles:
-		//   - name: ProfileName
-		//     pluginConfig:
-		//     - name: "DefaultEvictor"
-		//       args:
-		//         evictSystemCriticalPods: true
-		//         evictFailedBarePods: true
-		//         evictLocalStoragePods: true
-		//         nodeFit: true
-		//     - name: "PodsHavingTooManyRestarts"
-		//       args:
-		//         podRestartThreshold: 100
-		//         includingInitContainers: true
-		//     plugins:
-		//       filter:
-		//         enabled:
-		//           - "DefaultEvictor"
-		//       deschedule:
-		//         enabled:
-		//           - "RemovePodsHavingTooManyRestarts"
-		// `),
-		// 			result: &v1alpha2.DeschedulerPolicy{
-		// 				TypeMeta: v1.TypeMeta{
-		// 					Kind:       "DeschedulerPolicy",
-		// 					APIVersion: "descheduler/v1alpha2",
-		// 				},
-		// 				Profiles: []v1alpha2.Profile{
-		// 					{
-		// 						Name: podlifetime.PluginName,
-		// 						PluginConfig: []v1alpha2.PluginConfig{
-		// 							{
-		// 								Name: removepodshavingtoomanyrestarts.PluginName,
-		// 								Args: &removepodshavingtoomanyrestarts.RemovePodsHavingTooManyRestartsArgs{
-		// 									PodRestartThreshold:     100,
-		// 									IncludingInitContainers: true,
-		// 								},
-		// 							},
-		// 							{
-		// 								Name: defaultevictor.PluginName,
-		// 								Args: &defaultevictor.DefaultEvictorArgs{
-		// 									EvictSystemCriticalPods: true,
-		// 									EvictFailedBarePods:     true,
-		// 									EvictLocalStoragePods:   true,
-		// 									NodeFit:                 true,
-		// 								},
-		// 							},
-		// 						},
-		// 						Plugins: v1alpha2.Plugins{
-		// 							Evict: v1alpha2.PluginSet{
-		// 								Enabled: []string{defaultevictor.PluginName},
-		// 							},
-		// 							Filter: v1alpha2.PluginSet{
-		// 								Enabled: []string{defaultevictor.PluginName},
-		// 							},
-		// 							PreEvictionFilter: v1alpha2.PluginSet{
-		// 								Enabled: []string{defaultevictor.PluginName},
-		// 							},
-		// 							Deschedule: v1alpha2.PluginSet{
-		// 								Enabled: []string{removepodshavingtoomanyrestarts.PluginName},
-		// 							},
-		// 						},
-		// 					},
-		// 				},
-		// 			},
-		// 		},
+		{
+			description: "no conversion needed",
+			policy: []byte(`apiVersion: "descheduler/v1alpha2"
+kind: "DeschedulerPolicy"
+profiles:
+  - name: ProfileName
+    pluginConfig:
+    - name: "DefaultEvictor"
+      args:
+        evictSystemCriticalPods: true
+        evictFailedBarePods: true
+        evictLocalStoragePods: true
+        nodeFit: true
+    - name: "PodsHavingTooManyRestarts"
+      args:
+        podRestartThreshold: 100
+        includingInitContainers: true
+    plugins:
+      filter:
+        enabled:
+          - "DefaultEvictor"
+      deschedule:
+        enabled:
+          - "RemovePodsHavingTooManyRestarts"
+`),
+			result: &api.DeschedulerPolicy{
+				TypeMeta: v1.TypeMeta{
+					Kind:       "DeschedulerPolicy",
+					APIVersion: "descheduler/v1alpha2",
+				},
+				Profiles: []api.Profile{
+					{
+						Name: "ProfileName",
+						PluginConfig: []api.PluginConfig{
+							{
+								Name: defaultevictor.PluginName,
+								Args: runtime.RawExtension{
+									Object: &defaultevictor.DefaultEvictorArgs{
+										EvictSystemCriticalPods: true,
+										EvictFailedBarePods:     true,
+										EvictLocalStoragePods:   true,
+										NodeFit:                 true,
+									},
+								},
+							},
+							{
+								Name: removepodshavingtoomanyrestarts.PluginName,
+								Args: runtime.RawExtension{
+									Object: &removepodshavingtoomanyrestarts.RemovePodsHavingTooManyRestartsArgs{
+										PodRestartThreshold:     100,
+										IncludingInitContainers: true,
+									},
+								},
+							},
+						},
+						Plugins: api.Plugins{
+							Evict: api.PluginSet{
+								Enabled: []string{defaultevictor.PluginName},
+							},
+							Filter: api.PluginSet{
+								Enabled: []string{defaultevictor.PluginName},
+							},
+							PreEvictionFilter: api.PluginSet{
+								Enabled: []string{defaultevictor.PluginName},
+							},
+							Deschedule: api.PluginSet{
+								Enabled: []string{removepodshavingtoomanyrestarts.PluginName},
+							},
+						},
+					},
+				},
+			},
+		},
 	}
 
 	for _, tc := range testCases {
 		t.Run(tc.description, func(t *testing.T) {
-			decoder := scheme.Codecs.UniversalDecoder(v1alpha1.SchemeGroupVersion, v1alpha2.SchemeGroupVersion)
-			obj, err := runtime.Decode(decoder, tc.policy)
-			result, err := decodeVersionedPolicy(obj.GetObjectKind(), decoder, tc.policy)
+			result, err := decode(tc.policy, "filename")
 			if err != nil {
 				if tc.err == nil {
 					t.Errorf("unexpected error: %s.", err.Error())

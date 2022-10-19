@@ -19,7 +19,8 @@ package descheduler
 import (
 	"fmt"
 	"io/ioutil"
-	"sort"
+
+	// "sort"
 
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -42,7 +43,7 @@ import (
 	"sigs.k8s.io/descheduler/pkg/framework/plugins/removepodsviolatingtopologyspreadconstraint"
 )
 
-func LoadPolicyConfig(policyConfigFile string) (*v1alpha2.DeschedulerPolicy, error) {
+func LoadPolicyConfig(policyConfigFile string) (*api.DeschedulerPolicy, error) {
 	if policyConfigFile == "" {
 		klog.V(1).InfoS("Policy config file not specified")
 		return nil, nil
@@ -53,23 +54,70 @@ func LoadPolicyConfig(policyConfigFile string) (*v1alpha2.DeschedulerPolicy, err
 		return nil, fmt.Errorf("failed to read policy config file %q: %+v", policyConfigFile, err)
 	}
 
-	decoder := scheme.Codecs.UniversalDecoder(v1alpha1.SchemeGroupVersion, v1alpha2.SchemeGroupVersion)
-	obj, err := runtime.Decode(decoder, policy)
+	internalPolicy, err := decode(policy, policyConfigFile)
 	if err != nil {
-		return nil, fmt.Errorf("failed decoding descheduler's policy config %q: %v", policyConfigFile, err)
-	}
-	versionedPolicy, err := decodeVersionedPolicy(obj.GetObjectKind(), decoder, policy)
-	if err != nil {
-		return nil, fmt.Errorf("failed decoding descheduler's policy config %q: %v", policyConfigFile, err)
+		return nil, fmt.Errorf("failed decoding %q: %+v", policyConfigFile, err)
 	}
 
-	return versionedPolicy, nil
+	return internalPolicy, nil
 }
 
-func decodeVersionedPolicy(kind schema.ObjectKind, decoder runtime.Decoder, policy []byte) (*v1alpha2.DeschedulerPolicy, error) {
+func loadConfig(obj runtime.Object, gvk *schema.GroupVersionKind) (*api.DeschedulerPolicy, error) {
+	if cfgObj, ok := obj.(*api.DeschedulerPolicy); ok {
+		// We don't set this field in pkg/scheduler/apis/config/{version}/conversion.go
+		// because the field will be cleared later by API machinery during
+		// conversion. See KubeSchedulerConfiguration internal type definition for
+		// more details.
+		cfgObj.TypeMeta.APIVersion = v1alpha2.SchemeGroupVersion.String()
+		cfgObj.TypeMeta.Kind = "DeschedulerPolicy"
+		cfgObj.Profiles = api.SortProfilesByName(cfgObj.Profiles)
+		return cfgObj, nil
+	}
+	return nil, fmt.Errorf("couldn't decode as DeschedulerPolicy, got %s: ", gvk)
+}
+
+func decode(policy []byte, policyConfigFile string) (*api.DeschedulerPolicy, error) {
+	// if we get v1alpha1, easier to work with it like this
+	decoder := scheme.Codecs.UniversalDecoder(v1alpha1.SchemeGroupVersion, v1alpha2.SchemeGroupVersion)
+	decodedWithVersion, err := runtime.Decode(decoder, policy)
+	if err != nil {
+		return nil, fmt.Errorf("failed decoding decodedWithVersion with descheduler's policy config %q: %v", policyConfigFile, err)
+	}
+
+	// if we get v1alpha2, easier to use the default conersion so args go to runtime.RawExtensions with no problem
+	obj, gvk, err := scheme.Codecs.UniversalDecoder().Decode(policy, nil, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed decoding with universal decoder and descheduler's policy config %q: %v", policyConfigFile, err)
+	}
+
+	var internalPolicy *api.DeschedulerPolicy
+
+	versionedPolicy, err := decodePolicy(decodedWithVersion.GetObjectKind(), decoder, policy, decodedWithVersion)
+	if err != nil {
+		return nil, fmt.Errorf("failed decoding policy config %q: %v", policyConfigFile, err)
+	}
+
+	if versionedPolicy != nil {
+		internalPolicy = &api.DeschedulerPolicy{}
+		if err := scheme.Scheme.Convert(versionedPolicy, internalPolicy, nil); err != nil {
+			return nil, fmt.Errorf("failed converting versioned policy to internal policy version: %v", err)
+		}
+	} else {
+		cfgObj, err := loadConfig(obj, gvk)
+		if err != nil {
+			return nil, fmt.Errorf("failed decoding universal decoder obj for %q: %v", policyConfigFile, err)
+		}
+		internalPolicy = cfgObj
+	}
+	internalPolicy = setDefaults(*internalPolicy)
+
+	return internalPolicy, nil
+}
+
+func decodePolicy(kind schema.ObjectKind, decoder runtime.Decoder, policy []byte, decodedWithVersion runtime.Object) (*v1alpha2.DeschedulerPolicy, error) {
 	v2Policy := &v1alpha2.DeschedulerPolicy{}
 	var err error
-	if kind.GroupVersionKind().Version == "v1alpha1" {
+	if kind.GroupVersionKind().Version == "v1alpha1" || kind.GroupVersionKind().Version == runtime.APIVersionInternal {
 		v1Policy := &v1alpha1.DeschedulerPolicy{}
 		if err := runtime.DecodeInto(decoder, policy, v1Policy); err != nil {
 			return nil, err
@@ -78,15 +126,12 @@ func decodeVersionedPolicy(kind schema.ObjectKind, decoder runtime.Decoder, poli
 		if err != nil {
 			return nil, err
 		}
-	} else {
-		if err = runtime.DecodeInto(decoder, policy, v2Policy); err != nil {
+		err = validateDeschedulerConfiguration(*v2Policy)
+		if err != nil {
 			return nil, err
 		}
-	}
-	v2Policy = setDefaults(*v2Policy)
-	err = validateDeschedulerConfiguration(*v2Policy)
-	if err != nil {
-		return nil, err
+	} else {
+		return nil, nil
 	}
 	return v2Policy, nil
 }
@@ -138,7 +183,7 @@ func policyToDefaultEvictor(in *v1alpha1.DeschedulerPolicy, profiles []v1alpha2.
 	return &profiles
 }
 
-func setDefaults(in v1alpha2.DeschedulerPolicy) *v1alpha2.DeschedulerPolicy {
+func setDefaults(in api.DeschedulerPolicy) *api.DeschedulerPolicy {
 	for idx, profile := range in.Profiles {
 		// Most defaults are being set, for example in pkg/framework/plugins/nodeutilization/defaults.go
 		// If we need to set defaults coming from loadtime in each profile we do it here
@@ -147,46 +192,52 @@ func setDefaults(in v1alpha2.DeschedulerPolicy) *v1alpha2.DeschedulerPolicy {
 	return &in
 }
 
-func setDefaultEvictor(profile v1alpha2.Profile) v1alpha2.Profile {
+func setDefaultEvictor(profile api.Profile) api.Profile {
 	if len(profile.Plugins.Filter.Enabled) == 0 {
 		profile.Plugins.Filter.Enabled = append(profile.Plugins.Filter.Enabled, defaultevictor.PluginName)
+		rawExtensionArgs := runtime.RawExtension{}
+		rawExtensionArgs.Object = &defaultevictor.DefaultEvictorArgs{
+			EvictLocalStoragePods:   false,
+			EvictSystemCriticalPods: false,
+			IgnorePvcPods:           false,
+			EvictFailedBarePods:     false,
+		}
 		profile.PluginConfig = append(
-			profile.PluginConfig, v1alpha2.PluginConfig{
+			profile.PluginConfig, api.PluginConfig{
 				Name: defaultevictor.PluginName,
-				Args: &defaultevictor.DefaultEvictorArgs{
-					EvictLocalStoragePods:   false,
-					EvictSystemCriticalPods: false,
-					IgnorePvcPods:           false,
-					EvictFailedBarePods:     false,
-				},
+				Args: rawExtensionArgs,
 			},
 		)
 	}
 	if len(profile.Plugins.Evict.Enabled) == 0 {
 		profile.Plugins.Evict.Enabled = append(profile.Plugins.Evict.Enabled, defaultevictor.PluginName)
+		rawExtensionArgs := runtime.RawExtension{}
+		rawExtensionArgs.Object = &defaultevictor.DefaultEvictorArgs{
+			EvictLocalStoragePods:   false,
+			EvictSystemCriticalPods: false,
+			IgnorePvcPods:           false,
+			EvictFailedBarePods:     false,
+		}
 		profile.PluginConfig = append(
-			profile.PluginConfig, v1alpha2.PluginConfig{
+			profile.PluginConfig, api.PluginConfig{
 				Name: defaultevictor.PluginName,
-				Args: &defaultevictor.DefaultEvictorArgs{
-					EvictLocalStoragePods:   false,
-					EvictSystemCriticalPods: false,
-					IgnorePvcPods:           false,
-					EvictFailedBarePods:     false,
-				},
+				Args: rawExtensionArgs,
 			},
 		)
 	}
 	if len(profile.Plugins.PreEvictionFilter.Enabled) == 0 {
 		profile.Plugins.PreEvictionFilter.Enabled = append(profile.Plugins.PreEvictionFilter.Enabled, defaultevictor.PluginName)
+		rawExtensionArgs := runtime.RawExtension{}
+		rawExtensionArgs.Object = &defaultevictor.DefaultEvictorArgs{
+			EvictLocalStoragePods:   false,
+			EvictSystemCriticalPods: false,
+			IgnorePvcPods:           false,
+			EvictFailedBarePods:     false,
+		}
 		profile.PluginConfig = append(
-			profile.PluginConfig, v1alpha2.PluginConfig{
+			profile.PluginConfig, api.PluginConfig{
 				Name: defaultevictor.PluginName,
-				Args: &defaultevictor.DefaultEvictorArgs{
-					EvictLocalStoragePods:   false,
-					EvictSystemCriticalPods: false,
-					IgnorePvcPods:           false,
-					EvictFailedBarePods:     false,
-				},
+				Args: rawExtensionArgs,
 			},
 		)
 	}
@@ -204,37 +255,37 @@ func validateDeschedulerConfiguration(in v1alpha2.DeschedulerPolicy) error {
 		for _, pluginConfig := range profile.PluginConfig {
 			switch pluginConfig.Name {
 			case removeduplicates.PluginName:
-				err := removeduplicates.ValidateRemoveDuplicatesArgs(pluginConfig.Args.(*removeduplicates.RemoveDuplicatesArgs))
+				err := removeduplicates.ValidateRemoveDuplicatesArgs(pluginConfig.Args.Object.(*removeduplicates.RemoveDuplicatesArgs))
 				errorsInProfiles = setErrorsInProfiles(err, profile.Name, errorsInProfiles)
 			case nodeutilization.LowNodeUtilizationPluginName:
-				err := nodeutilization.ValidateLowNodeUtilizationArgs(pluginConfig.Args.(*nodeutilization.LowNodeUtilizationArgs))
+				err := nodeutilization.ValidateLowNodeUtilizationArgs(pluginConfig.Args.Object.(*nodeutilization.LowNodeUtilizationArgs))
 				errorsInProfiles = setErrorsInProfiles(err, profile.Name, errorsInProfiles)
 			case nodeutilization.HighNodeUtilizationPluginName:
-				err := nodeutilization.ValidateHighNodeUtilizationArgs(pluginConfig.Args.(*nodeutilization.HighNodeUtilizationArgs))
+				err := nodeutilization.ValidateHighNodeUtilizationArgs(pluginConfig.Args.Object.(*nodeutilization.HighNodeUtilizationArgs))
 				errorsInProfiles = setErrorsInProfiles(err, profile.Name, errorsInProfiles)
 			case removepodsviolatinginterpodantiaffinity.PluginName:
-				err := removepodsviolatinginterpodantiaffinity.ValidateRemovePodsViolatingInterPodAntiAffinityArgs(pluginConfig.Args.(*removepodsviolatinginterpodantiaffinity.RemovePodsViolatingInterPodAntiAffinityArgs))
+				err := removepodsviolatinginterpodantiaffinity.ValidateRemovePodsViolatingInterPodAntiAffinityArgs(pluginConfig.Args.Object.(*removepodsviolatinginterpodantiaffinity.RemovePodsViolatingInterPodAntiAffinityArgs))
 				errorsInProfiles = setErrorsInProfiles(err, profile.Name, errorsInProfiles)
 			case removepodsviolatingnodeaffinity.PluginName:
-				err := removepodsviolatingnodeaffinity.ValidateRemovePodsViolatingNodeAffinityArgs(pluginConfig.Args.(*removepodsviolatingnodeaffinity.RemovePodsViolatingNodeAffinityArgs))
+				err := removepodsviolatingnodeaffinity.ValidateRemovePodsViolatingNodeAffinityArgs(pluginConfig.Args.Object.(*removepodsviolatingnodeaffinity.RemovePodsViolatingNodeAffinityArgs))
 				errorsInProfiles = setErrorsInProfiles(err, profile.Name, errorsInProfiles)
 			case removepodsviolatingnodetaints.PluginName:
-				err := removepodsviolatingnodetaints.ValidateRemovePodsViolatingNodeTaintsArgs(pluginConfig.Args.(*removepodsviolatingnodetaints.RemovePodsViolatingNodeTaintsArgs))
+				err := removepodsviolatingnodetaints.ValidateRemovePodsViolatingNodeTaintsArgs(pluginConfig.Args.Object.(*removepodsviolatingnodetaints.RemovePodsViolatingNodeTaintsArgs))
 				errorsInProfiles = setErrorsInProfiles(err, profile.Name, errorsInProfiles)
 			case removepodsviolatingtopologyspreadconstraint.PluginName:
-				err := removepodsviolatingtopologyspreadconstraint.ValidateRemovePodsViolatingTopologySpreadConstraintArgs(pluginConfig.Args.(*removepodsviolatingtopologyspreadconstraint.RemovePodsViolatingTopologySpreadConstraintArgs))
+				err := removepodsviolatingtopologyspreadconstraint.ValidateRemovePodsViolatingTopologySpreadConstraintArgs(pluginConfig.Args.Object.(*removepodsviolatingtopologyspreadconstraint.RemovePodsViolatingTopologySpreadConstraintArgs))
 				errorsInProfiles = setErrorsInProfiles(err, profile.Name, errorsInProfiles)
 			case removepodshavingtoomanyrestarts.PluginName:
-				err := removepodshavingtoomanyrestarts.ValidateRemovePodsHavingTooManyRestartsArgs(pluginConfig.Args.(*removepodshavingtoomanyrestarts.RemovePodsHavingTooManyRestartsArgs))
+				err := removepodshavingtoomanyrestarts.ValidateRemovePodsHavingTooManyRestartsArgs(pluginConfig.Args.Object.(*removepodshavingtoomanyrestarts.RemovePodsHavingTooManyRestartsArgs))
 				errorsInProfiles = setErrorsInProfiles(err, profile.Name, errorsInProfiles)
 			case podlifetime.PluginName:
-				err := podlifetime.ValidatePodLifeTimeArgs(pluginConfig.Args.(*podlifetime.PodLifeTimeArgs))
+				err := podlifetime.ValidatePodLifeTimeArgs(pluginConfig.Args.Object.(*podlifetime.PodLifeTimeArgs))
 				errorsInProfiles = setErrorsInProfiles(err, profile.Name, errorsInProfiles)
 			case removefailedpods.PluginName:
-				err := removefailedpods.ValidateRemoveFailedPodsArgs(pluginConfig.Args.(*removefailedpods.RemoveFailedPodsArgs))
+				err := removefailedpods.ValidateRemoveFailedPodsArgs(pluginConfig.Args.Object.(*removefailedpods.RemoveFailedPodsArgs))
 				errorsInProfiles = setErrorsInProfiles(err, profile.Name, errorsInProfiles)
 			case defaultevictor.PluginName:
-				_, err := defaultevictor.ValidateDefaultEvictorArgs(pluginConfig.Args.(*defaultevictor.DefaultEvictorArgs))
+				_, err := defaultevictor.ValidateDefaultEvictorArgs(pluginConfig.Args.Object.(*defaultevictor.DefaultEvictorArgs))
 				errorsInProfiles = setErrorsInProfiles(err, profile.Name, errorsInProfiles)
 			default:
 				// For now erroing out on unexpected plugin names,
@@ -342,15 +393,8 @@ func strategiesToProfiles(strategies v1alpha1.StrategyList) (*[]v1alpha2.Profile
 	}
 	// easier to test and to know what to expect if it is sorted
 	// (accessing the map with 'for key, val := range map' can start with any of the keys)
-	profiles = sortProfiles(profiles)
+	profiles = v1alpha2.SortProfilesByName(profiles)
 	return &profiles, nil
-}
-
-func sortProfiles(profiles []v1alpha2.Profile) []v1alpha2.Profile {
-	sort.Slice(profiles, func(i, j int) bool {
-		return profiles[i].Name < profiles[j].Name
-	})
-	return profiles
 }
 
 func strategyToProfileWithBalancePlugin(args runtime.Object, name v1alpha1.StrategyName, strategy v1alpha1.DeschedulerStrategy) v1alpha2.Profile {
@@ -397,7 +441,7 @@ func hasPluginConfigsWithSameName(newPluginConfig v1alpha2.PluginConfig, pluginC
 
 func configurePlugin(args runtime.Object, name string) v1alpha2.PluginConfig {
 	var pluginConfig v1alpha2.PluginConfig
-	pluginConfig.Args = args
+	pluginConfig.Args.Object = args
 	pluginConfig.Name = name
 	return pluginConfig
 }

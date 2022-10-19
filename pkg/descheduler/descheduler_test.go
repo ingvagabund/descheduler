@@ -13,7 +13,7 @@ import (
 	fakeclientset "k8s.io/client-go/kubernetes/fake"
 	core "k8s.io/client-go/testing"
 	"sigs.k8s.io/descheduler/cmd/descheduler/app/options"
-	"sigs.k8s.io/descheduler/pkg/api/v1alpha2"
+	"sigs.k8s.io/descheduler/pkg/api"
 	"sigs.k8s.io/descheduler/pkg/framework/plugins/defaultevictor"
 	"sigs.k8s.io/descheduler/pkg/framework/plugins/removeduplicates"
 	"sigs.k8s.io/descheduler/pkg/framework/plugins/removepodsviolatingnodetaints"
@@ -32,31 +32,35 @@ func TestTaintsUpdated(t *testing.T) {
 
 	client := fakeclientset.NewSimpleClientset(n1, n2, p1)
 	eventClient := fakeclientset.NewSimpleClientset(n1, n2, p1)
-	dp := &v1alpha2.DeschedulerPolicy{
-		Profiles: []v1alpha2.Profile{
+	dp := &api.DeschedulerPolicy{
+		Profiles: []api.Profile{
 			{
 				Name: "test-profile",
-				PluginConfig: []v1alpha2.PluginConfig{
+				PluginConfig: []api.PluginConfig{
 					{
 						Name: removepodsviolatingnodetaints.PluginName,
-						Args: &removepodsviolatingnodetaints.RemovePodsViolatingNodeTaintsArgs{},
+						Args: runtime.RawExtension{
+							Object: &removepodsviolatingnodetaints.RemovePodsViolatingNodeTaintsArgs{},
+						},
 					},
 					{
 						Name: defaultevictor.PluginName,
-						Args: &defaultevictor.DefaultEvictorArgs{},
+						Args: runtime.RawExtension{
+							Object: &defaultevictor.DefaultEvictorArgs{},
+						},
 					},
 				},
-				Plugins: v1alpha2.Plugins{
-					Evict: v1alpha2.PluginSet{
+				Plugins: api.Plugins{
+					Evict: api.PluginSet{
 						Enabled: []string{defaultevictor.PluginName},
 					},
-					Filter: v1alpha2.PluginSet{
+					Filter: api.PluginSet{
 						Enabled: []string{defaultevictor.PluginName},
 					},
-					PreEvictionFilter: v1alpha2.PluginSet{
+					PreEvictionFilter: api.PluginSet{
 						Enabled: []string{defaultevictor.PluginName},
 					},
-					Deschedule: v1alpha2.PluginSet{
+					Deschedule: api.PluginSet{
 						Enabled: []string{removepodsviolatingnodetaints.PluginName},
 					},
 				},
@@ -123,31 +127,35 @@ func TestDuplicate(t *testing.T) {
 
 	client := fakeclientset.NewSimpleClientset(node1, node2, p1, p2, p3)
 	eventClient := fakeclientset.NewSimpleClientset(node1, node2, p1, p2, p3)
-	dp := &v1alpha2.DeschedulerPolicy{
-		Profiles: []v1alpha2.Profile{
+	dp := &api.DeschedulerPolicy{
+		Profiles: []api.Profile{
 			{
 				Name: "test-profile",
-				PluginConfig: []v1alpha2.PluginConfig{
+				PluginConfig: []api.PluginConfig{
 					{
 						Name: removeduplicates.PluginName,
-						Args: &removeduplicates.RemoveDuplicatesArgs{},
+						Args: runtime.RawExtension{
+							Object: &removeduplicates.RemoveDuplicatesArgs{},
+						},
 					},
 					{
 						Name: defaultevictor.PluginName,
-						Args: &defaultevictor.DefaultEvictorArgs{},
+						Args: runtime.RawExtension{
+							Object: &defaultevictor.DefaultEvictorArgs{},
+						},
 					},
 				},
-				Plugins: v1alpha2.Plugins{
-					Evict: v1alpha2.PluginSet{
+				Plugins: api.Plugins{
+					Evict: api.PluginSet{
 						Enabled: []string{defaultevictor.PluginName},
 					},
-					Filter: v1alpha2.PluginSet{
+					Filter: api.PluginSet{
 						Enabled: []string{defaultevictor.PluginName},
 					},
-					PreEvictionFilter: v1alpha2.PluginSet{
+					PreEvictionFilter: api.PluginSet{
 						Enabled: []string{defaultevictor.PluginName},
 					},
-					Deschedule: v1alpha2.PluginSet{
+					Deschedule: api.PluginSet{
 						Enabled: []string{removeduplicates.PluginName},
 					},
 				},
@@ -190,24 +198,26 @@ func TestRootCancel(t *testing.T) {
 	client := fakeclientset.NewSimpleClientset(n1, n2)
 	eventClient := fakeclientset.NewSimpleClientset(n1, n2)
 
-	dp := &v1alpha2.DeschedulerPolicy{
-		Profiles: []v1alpha2.Profile{
+	dp := &api.DeschedulerPolicy{
+		Profiles: []api.Profile{
 			{
 				Name: "test-profile",
-				PluginConfig: []v1alpha2.PluginConfig{
+				PluginConfig: []api.PluginConfig{
 					{
 						Name: defaultevictor.PluginName,
-						Args: &defaultevictor.DefaultEvictorArgs{},
+						Args: runtime.RawExtension{
+							Object: &defaultevictor.DefaultEvictorArgs{},
+						},
 					},
 				},
-				Plugins: v1alpha2.Plugins{
-					Evict: v1alpha2.PluginSet{
+				Plugins: api.Plugins{
+					Evict: api.PluginSet{
 						Enabled: []string{defaultevictor.PluginName},
 					},
-					Filter: v1alpha2.PluginSet{
+					Filter: api.PluginSet{
 						Enabled: []string{defaultevictor.PluginName},
 					},
-					PreEvictionFilter: v1alpha2.PluginSet{
+					PreEvictionFilter: api.PluginSet{
 						Enabled: []string{defaultevictor.PluginName},
 					},
 				},
@@ -246,24 +256,26 @@ func TestRootCancelWithNoInterval(t *testing.T) {
 	n2 := test.BuildTestNode("n2", 2000, 3000, 10, nil)
 	client := fakeclientset.NewSimpleClientset(n1, n2)
 	eventClient := fakeclientset.NewSimpleClientset(n1, n2)
-	dp := &v1alpha2.DeschedulerPolicy{
-		Profiles: []v1alpha2.Profile{
+	dp := &api.DeschedulerPolicy{
+		Profiles: []api.Profile{
 			{
 				Name: "test-profile",
-				PluginConfig: []v1alpha2.PluginConfig{
+				PluginConfig: []api.PluginConfig{
 					{
 						Name: defaultevictor.PluginName,
-						Args: &defaultevictor.DefaultEvictorArgs{},
+						Args: runtime.RawExtension{
+							Object: &defaultevictor.DefaultEvictorArgs{},
+						},
 					},
 				},
-				Plugins: v1alpha2.Plugins{
-					Evict: v1alpha2.PluginSet{
+				Plugins: api.Plugins{
+					Evict: api.PluginSet{
 						Enabled: []string{defaultevictor.PluginName},
 					},
-					Filter: v1alpha2.PluginSet{
+					Filter: api.PluginSet{
 						Enabled: []string{defaultevictor.PluginName},
 					},
-					PreEvictionFilter: v1alpha2.PluginSet{
+					PreEvictionFilter: api.PluginSet{
 						Enabled: []string{defaultevictor.PluginName},
 					},
 				},

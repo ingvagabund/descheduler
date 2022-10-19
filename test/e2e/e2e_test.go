@@ -31,6 +31,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/uuid"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/informers"
@@ -42,7 +43,6 @@ import (
 	"sigs.k8s.io/descheduler/cmd/descheduler/app/options"
 	"sigs.k8s.io/descheduler/pkg/api"
 	deschedulerapi "sigs.k8s.io/descheduler/pkg/api"
-	"sigs.k8s.io/descheduler/pkg/api/v1alpha2"
 	"sigs.k8s.io/descheduler/pkg/descheduler"
 	"sigs.k8s.io/descheduler/pkg/descheduler/client"
 	"sigs.k8s.io/descheduler/pkg/descheduler/evictions"
@@ -1098,24 +1098,26 @@ func TestDeschedulingInterval(t *testing.T) {
 	}
 	s.Client = clientSet
 
-	deschedulerPolicy := &v1alpha2.DeschedulerPolicy{
-		Profiles: []v1alpha2.Profile{
+	deschedulerPolicy := &api.DeschedulerPolicy{
+		Profiles: []api.Profile{
 			{
 				Name: "test-profile",
-				PluginConfig: []v1alpha2.PluginConfig{
+				PluginConfig: []api.PluginConfig{
 					{
 						Name: defaultevictor.PluginName,
-						Args: &defaultevictor.DefaultEvictorArgs{},
+						Args: runtime.RawExtension{
+							Object: &defaultevictor.DefaultEvictorArgs{},
+						},
 					},
 				},
-				Plugins: v1alpha2.Plugins{
-					Evict: v1alpha2.PluginSet{
+				Plugins: api.Plugins{
+					Evict: api.PluginSet{
 						Enabled: []string{defaultevictor.PluginName},
 					},
-					Filter: v1alpha2.PluginSet{
+					Filter: api.PluginSet{
 						Enabled: []string{defaultevictor.PluginName},
 					},
-					PreEvictionFilter: v1alpha2.PluginSet{
+					PreEvictionFilter: api.PluginSet{
 						Enabled: []string{defaultevictor.PluginName},
 					},
 				},
