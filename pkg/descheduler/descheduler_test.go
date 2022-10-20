@@ -39,15 +39,11 @@ func TestTaintsUpdated(t *testing.T) {
 				PluginConfig: []api.PluginConfig{
 					{
 						Name: removepodsviolatingnodetaints.PluginName,
-						Args: runtime.RawExtension{
-							Object: &removepodsviolatingnodetaints.RemovePodsViolatingNodeTaintsArgs{},
-						},
+						Args: &removepodsviolatingnodetaints.RemovePodsViolatingNodeTaintsArgs{},
 					},
 					{
 						Name: defaultevictor.PluginName,
-						Args: runtime.RawExtension{
-							Object: &defaultevictor.DefaultEvictorArgs{},
-						},
+						Args: &defaultevictor.DefaultEvictorArgs{},
 					},
 				},
 				Plugins: api.Plugins{
@@ -134,15 +130,11 @@ func TestDuplicate(t *testing.T) {
 				PluginConfig: []api.PluginConfig{
 					{
 						Name: removeduplicates.PluginName,
-						Args: runtime.RawExtension{
-							Object: &removeduplicates.RemoveDuplicatesArgs{},
-						},
+						Args: &removeduplicates.RemoveDuplicatesArgs{},
 					},
 					{
 						Name: defaultevictor.PluginName,
-						Args: runtime.RawExtension{
-							Object: &defaultevictor.DefaultEvictorArgs{},
-						},
+						Args: &defaultevictor.DefaultEvictorArgs{},
 					},
 				},
 				Plugins: api.Plugins{
@@ -205,9 +197,7 @@ func TestRootCancel(t *testing.T) {
 				PluginConfig: []api.PluginConfig{
 					{
 						Name: defaultevictor.PluginName,
-						Args: runtime.RawExtension{
-							Object: &defaultevictor.DefaultEvictorArgs{},
-						},
+						Args: &defaultevictor.DefaultEvictorArgs{},
 					},
 				},
 				Plugins: api.Plugins{
@@ -263,9 +253,7 @@ func TestRootCancelWithNoInterval(t *testing.T) {
 				PluginConfig: []api.PluginConfig{
 					{
 						Name: defaultevictor.PluginName,
-						Args: runtime.RawExtension{
-							Object: &defaultevictor.DefaultEvictorArgs{},
-						},
+						Args: &defaultevictor.DefaultEvictorArgs{},
 					},
 				},
 				Plugins: api.Plugins{

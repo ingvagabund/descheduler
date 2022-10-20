@@ -19,6 +19,7 @@ package v1alpha2
 import (
 	"fmt"
 	"sync"
+	unsafe "unsafe"
 
 	"k8s.io/apimachinery/pkg/conversion"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -45,10 +46,45 @@ func GetPluginArgConversionScheme() *runtime.Scheme {
 }
 
 func Convert_v1alpha2_DeschedulerPolicy_To_api_DeschedulerPolicy(in *DeschedulerPolicy, out *api.DeschedulerPolicy, s conversion.Scope) error {
-	if err := autoConvert_v1alpha2_DeschedulerPolicy_To_api_DeschedulerPolicy(in, out, s); err != nil {
+	if err := manualConvert_v1alpha2_DeschedulerPolicy_To_api_DeschedulerPolicy(in, out, s); err != nil {
 		return err
 	}
 	return convertToInternalPluginConfigArgs(out)
+}
+
+func manualConvert_v1alpha2_DeschedulerPolicy_To_api_DeschedulerPolicy(in *DeschedulerPolicy, out *api.DeschedulerPolicy, s conversion.Scope) error {
+	hasRawData := false
+	for _, profile := range in.Profiles {
+		newOutProfile := api.Profile{}
+		newOutProfile.Name = profile.Name
+		newOutPluginconfigs := []api.PluginConfig{}
+		for _, pluginConfig := range profile.PluginConfig {
+			newOutPluginConfig := api.PluginConfig{
+				Name: pluginConfig.Name,
+			}
+			if pluginConfig.Args.Raw == nil {
+				newOutPluginConfig.Args = pluginConfig.Args.Object
+			} else {
+				hasRawData = true
+				break
+			}
+			newOutPluginconfigs = append(newOutPluginconfigs, newOutPluginConfig)
+		}
+		if hasRawData {
+			break
+		}
+		newOutProfile.PluginConfig = newOutPluginconfigs
+		newOutProfile.Plugins = *(*api.Plugins)(unsafe.Pointer(&profile.Plugins))
+		out.Profiles = append(out.Profiles, newOutProfile)
+	}
+	if hasRawData {
+		autoConvert_v1alpha2_DeschedulerPolicy_To_api_DeschedulerPolicy(in, out, s)
+	} else {
+		out.NodeSelector = (*string)(unsafe.Pointer(in.NodeSelector))
+		out.MaxNoOfPodsToEvictPerNode = (*uint)(unsafe.Pointer(in.MaxNoOfPodsToEvictPerNode))
+		out.MaxNoOfPodsToEvictPerNamespace = (*uint)(unsafe.Pointer(in.MaxNoOfPodsToEvictPerNamespace))
+	}
+	return nil
 }
 
 // convertToInternalPluginConfigArgs converts PluginConfig#Args into internal
@@ -59,21 +95,21 @@ func convertToInternalPluginConfigArgs(out *api.DeschedulerPolicy) error {
 		prof := &out.Profiles[i]
 		for j := range prof.PluginConfig {
 			args := prof.PluginConfig[j].Args
-			if args.Object == nil {
+			if args == nil {
 				continue
 			}
-			if _, isUnknown := args.Object.(*runtime.Unknown); isUnknown {
-				continue
-			}
-			internalArgs, err := scheme.ConvertToVersion(args.Object, api.SchemeGroupVersion)
+			// if _, isUnknown := args.(*runtime.Unknown); isUnknown {
+			// 	continue
+			// }
+			internalArgs, err := scheme.ConvertToVersion(args, api.SchemeGroupVersion)
 			if err != nil {
 				err = nil
-				internalArgs = args.Object
+				internalArgs = args
 				if err != nil {
 					return fmt.Errorf("converting .Profiles[%d].PluginConfig[%d].Args into internal type: %w", i, j, err)
 				}
 			}
-			prof.PluginConfig[j].Args.Object = internalArgs
+			prof.PluginConfig[j].Args = internalArgs
 		}
 	}
 	return nil

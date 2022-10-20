@@ -59,17 +59,17 @@ func convertToInternalPluginConfigArgs(out *api.DeschedulerPolicy) error {
 		prof := &out.Profiles[i]
 		for j := range prof.PluginConfig {
 			args := prof.PluginConfig[j].Args
-			if args.Object == nil {
+			if args == nil {
 				continue
 			}
-			if _, isUnknown := args.Object.(*runtime.Unknown); isUnknown {
+			if _, isUnknown := args.(*runtime.Unknown); isUnknown {
 				continue
 			}
-			internalArgs, err := scheme.ConvertToVersion(args.Object, api.SchemeGroupVersion)
+			internalArgs, err := scheme.ConvertToVersion(args, api.SchemeGroupVersion)
 			if err != nil {
 				return fmt.Errorf("converting .Profiles[%d].PluginConfig[%d].Args into internal type: %w", i, j, err)
 			}
-			prof.PluginConfig[j].Args.Object = internalArgs
+			prof.PluginConfig[j].Args = internalArgs
 		}
 	}
 	return nil

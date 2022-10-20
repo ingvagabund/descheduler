@@ -329,7 +329,7 @@ func RunDeschedulerStrategies(ctx context.Context, rs *options.DeschedulerServer
 			_, filterConfigs, _ := getSortersFiltersAndEvictorConfigFromProfile(profile)
 			var filterArgs []runtime.Object
 			for _, filterConfig := range filterConfigs {
-				filterArgs = append(filterArgs, filterConfig.Args.Object.(*defaultevictor.DefaultEvictorArgs))
+				filterArgs = append(filterArgs, filterConfig.Args.(*defaultevictor.DefaultEvictorArgs))
 			}
 			evictorFilters, err := buildEvictorFilterPlugins(filterArgs, rs.Client, getPodsAssignedToNode, sharedInformerFactory)
 			if err != nil {
@@ -389,7 +389,7 @@ func runPlugin(ctx context.Context, evictorFilters []framework.EvictorPlugin, ha
 	// (See discussion thread https://github.com/kubernetes-sigs/descheduler/pull/885#discussion_r919962292)
 	childCtx := context.WithValue(ctx, "strategyName", string(pluginName))
 	if pgFnc, exists := pluginsMap[string(pluginName)]; exists {
-		pgFnc(childCtx, nodes, PluginArgs.Object, handle)
+		pgFnc(childCtx, nodes, PluginArgs, handle)
 	}
 	return nil
 }

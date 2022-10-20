@@ -100,7 +100,17 @@ func RegisterConversions(s *runtime.Scheme) error {
 }
 
 func autoConvert_v1alpha2_DeschedulerPolicy_To_api_DeschedulerPolicy(in *DeschedulerPolicy, out *api.DeschedulerPolicy, s conversion.Scope) error {
-	out.Profiles = *(*[]api.Profile)(unsafe.Pointer(&in.Profiles))
+	if in.Profiles != nil {
+		in, out := &in.Profiles, &out.Profiles
+		*out = make([]api.Profile, len(*in))
+		for i := range *in {
+			if err := Convert_v1alpha2_Profile_To_api_Profile(&(*in)[i], &(*out)[i], s); err != nil {
+				return err
+			}
+		}
+	} else {
+		out.Profiles = nil
+	}
 	out.NodeSelector = (*string)(unsafe.Pointer(in.NodeSelector))
 	out.MaxNoOfPodsToEvictPerNode = (*uint)(unsafe.Pointer(in.MaxNoOfPodsToEvictPerNode))
 	out.MaxNoOfPodsToEvictPerNamespace = (*uint)(unsafe.Pointer(in.MaxNoOfPodsToEvictPerNamespace))
@@ -108,7 +118,17 @@ func autoConvert_v1alpha2_DeschedulerPolicy_To_api_DeschedulerPolicy(in *Desched
 }
 
 func autoConvert_api_DeschedulerPolicy_To_v1alpha2_DeschedulerPolicy(in *api.DeschedulerPolicy, out *DeschedulerPolicy, s conversion.Scope) error {
-	out.Profiles = *(*[]Profile)(unsafe.Pointer(&in.Profiles))
+	if in.Profiles != nil {
+		in, out := &in.Profiles, &out.Profiles
+		*out = make([]Profile, len(*in))
+		for i := range *in {
+			if err := Convert_api_Profile_To_v1alpha2_Profile(&(*in)[i], &(*out)[i], s); err != nil {
+				return err
+			}
+		}
+	} else {
+		out.Profiles = nil
+	}
 	out.NodeSelector = (*string)(unsafe.Pointer(in.NodeSelector))
 	out.MaxNoOfPodsToEvictPerNode = (*uint)(unsafe.Pointer(in.MaxNoOfPodsToEvictPerNode))
 	out.MaxNoOfPodsToEvictPerNamespace = (*uint)(unsafe.Pointer(in.MaxNoOfPodsToEvictPerNamespace))
@@ -139,7 +159,9 @@ func Convert_api_Namespaces_To_v1alpha2_Namespaces(in *api.Namespaces, out *Name
 
 func autoConvert_v1alpha2_PluginConfig_To_api_PluginConfig(in *PluginConfig, out *api.PluginConfig, s conversion.Scope) error {
 	out.Name = in.Name
-	out.Args = in.Args
+	if err := runtime.Convert_runtime_RawExtension_To_runtime_Object(&in.Args, &out.Args, s); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -150,7 +172,9 @@ func Convert_v1alpha2_PluginConfig_To_api_PluginConfig(in *PluginConfig, out *ap
 
 func autoConvert_api_PluginConfig_To_v1alpha2_PluginConfig(in *api.PluginConfig, out *PluginConfig, s conversion.Scope) error {
 	out.Name = in.Name
-	out.Args = in.Args
+	if err := runtime.Convert_runtime_Object_To_runtime_RawExtension(&in.Args, &out.Args, s); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -243,7 +267,17 @@ func Convert_api_Plugins_To_v1alpha2_Plugins(in *api.Plugins, out *Plugins, s co
 
 func autoConvert_v1alpha2_Profile_To_api_Profile(in *Profile, out *api.Profile, s conversion.Scope) error {
 	out.Name = in.Name
-	out.PluginConfig = *(*[]api.PluginConfig)(unsafe.Pointer(&in.PluginConfig))
+	if in.PluginConfig != nil {
+		in, out := &in.PluginConfig, &out.PluginConfig
+		*out = make([]api.PluginConfig, len(*in))
+		for i := range *in {
+			if err := Convert_v1alpha2_PluginConfig_To_api_PluginConfig(&(*in)[i], &(*out)[i], s); err != nil {
+				return err
+			}
+		}
+	} else {
+		out.PluginConfig = nil
+	}
 	if err := Convert_v1alpha2_Plugins_To_api_Plugins(&in.Plugins, &out.Plugins, s); err != nil {
 		return err
 	}
@@ -257,7 +291,17 @@ func Convert_v1alpha2_Profile_To_api_Profile(in *Profile, out *api.Profile, s co
 
 func autoConvert_api_Profile_To_v1alpha2_Profile(in *api.Profile, out *Profile, s conversion.Scope) error {
 	out.Name = in.Name
-	out.PluginConfig = *(*[]PluginConfig)(unsafe.Pointer(&in.PluginConfig))
+	if in.PluginConfig != nil {
+		in, out := &in.PluginConfig, &out.PluginConfig
+		*out = make([]PluginConfig, len(*in))
+		for i := range *in {
+			if err := Convert_api_PluginConfig_To_v1alpha2_PluginConfig(&(*in)[i], &(*out)[i], s); err != nil {
+				return err
+			}
+		}
+	} else {
+		out.PluginConfig = nil
+	}
 	if err := Convert_api_Plugins_To_v1alpha2_Plugins(&in.Plugins, &out.Plugins, s); err != nil {
 		return err
 	}

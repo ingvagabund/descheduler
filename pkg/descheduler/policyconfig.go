@@ -23,6 +23,7 @@ import (
 	// "sort"
 
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	// "k8s.io/apimachinery/pkg/conversion"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/klog/v2"
@@ -62,23 +63,9 @@ func LoadPolicyConfig(policyConfigFile string) (*api.DeschedulerPolicy, error) {
 	return internalPolicy, nil
 }
 
-func loadConfig(obj runtime.Object, gvk *schema.GroupVersionKind) (*api.DeschedulerPolicy, error) {
-	if cfgObj, ok := obj.(*api.DeschedulerPolicy); ok {
-		// We don't set this field in pkg/scheduler/apis/config/{version}/conversion.go
-		// because the field will be cleared later by API machinery during
-		// conversion. See KubeSchedulerConfiguration internal type definition for
-		// more details.
-		cfgObj.TypeMeta.APIVersion = v1alpha2.SchemeGroupVersion.String()
-		cfgObj.TypeMeta.Kind = "DeschedulerPolicy"
-		cfgObj.Profiles = api.SortProfilesByName(cfgObj.Profiles)
-		return cfgObj, nil
-	}
-	return nil, fmt.Errorf("couldn't decode as DeschedulerPolicy, got %s: ", gvk)
-}
-
 func decode(policy []byte, policyConfigFile string) (*api.DeschedulerPolicy, error) {
 	// if we get v1alpha1, easier to work with it like this
-	decoder := scheme.Codecs.UniversalDecoder(v1alpha1.SchemeGroupVersion, v1alpha2.SchemeGroupVersion)
+	decoder := scheme.Codecs.UniversalDecoder(v1alpha1.SchemeGroupVersion, v1alpha2.SchemeGroupVersion, api.SchemeGroupVersion)
 	decodedWithVersion, err := runtime.Decode(decoder, policy)
 	if err != nil {
 		return nil, fmt.Errorf("failed decoding decodedWithVersion with descheduler's policy config %q: %v", policyConfigFile, err)
@@ -112,6 +99,16 @@ func decode(policy []byte, policyConfigFile string) (*api.DeschedulerPolicy, err
 	internalPolicy = setDefaults(*internalPolicy)
 
 	return internalPolicy, nil
+}
+
+func loadConfig(obj runtime.Object, gvk *schema.GroupVersionKind) (*api.DeschedulerPolicy, error) {
+	if cfgObj, ok := obj.(*api.DeschedulerPolicy); ok {
+		cfgObj.TypeMeta.APIVersion = v1alpha2.SchemeGroupVersion.String()
+		cfgObj.TypeMeta.Kind = "DeschedulerPolicy"
+		cfgObj.Profiles = api.SortProfilesByName(cfgObj.Profiles)
+		return cfgObj, nil
+	}
+	return nil, fmt.Errorf("couldn't decode as DeschedulerPolicy, got %s: ", gvk)
 }
 
 func decodePolicy(kind schema.ObjectKind, decoder runtime.Decoder, policy []byte, decodedWithVersion runtime.Object) (*v1alpha2.DeschedulerPolicy, error) {
@@ -195,49 +192,43 @@ func setDefaults(in api.DeschedulerPolicy) *api.DeschedulerPolicy {
 func setDefaultEvictor(profile api.Profile) api.Profile {
 	if len(profile.Plugins.Filter.Enabled) == 0 {
 		profile.Plugins.Filter.Enabled = append(profile.Plugins.Filter.Enabled, defaultevictor.PluginName)
-		rawExtensionArgs := runtime.RawExtension{}
-		rawExtensionArgs.Object = &defaultevictor.DefaultEvictorArgs{
-			EvictLocalStoragePods:   false,
-			EvictSystemCriticalPods: false,
-			IgnorePvcPods:           false,
-			EvictFailedBarePods:     false,
-		}
 		profile.PluginConfig = append(
 			profile.PluginConfig, api.PluginConfig{
 				Name: defaultevictor.PluginName,
-				Args: rawExtensionArgs,
+				Args: &defaultevictor.DefaultEvictorArgs{
+					EvictLocalStoragePods:   false,
+					EvictSystemCriticalPods: false,
+					IgnorePvcPods:           false,
+					EvictFailedBarePods:     false,
+				},
 			},
 		)
 	}
 	if len(profile.Plugins.Evict.Enabled) == 0 {
 		profile.Plugins.Evict.Enabled = append(profile.Plugins.Evict.Enabled, defaultevictor.PluginName)
-		rawExtensionArgs := runtime.RawExtension{}
-		rawExtensionArgs.Object = &defaultevictor.DefaultEvictorArgs{
-			EvictLocalStoragePods:   false,
-			EvictSystemCriticalPods: false,
-			IgnorePvcPods:           false,
-			EvictFailedBarePods:     false,
-		}
 		profile.PluginConfig = append(
 			profile.PluginConfig, api.PluginConfig{
 				Name: defaultevictor.PluginName,
-				Args: rawExtensionArgs,
+				Args: &defaultevictor.DefaultEvictorArgs{
+					EvictLocalStoragePods:   false,
+					EvictSystemCriticalPods: false,
+					IgnorePvcPods:           false,
+					EvictFailedBarePods:     false,
+				},
 			},
 		)
 	}
 	if len(profile.Plugins.PreEvictionFilter.Enabled) == 0 {
 		profile.Plugins.PreEvictionFilter.Enabled = append(profile.Plugins.PreEvictionFilter.Enabled, defaultevictor.PluginName)
-		rawExtensionArgs := runtime.RawExtension{}
-		rawExtensionArgs.Object = &defaultevictor.DefaultEvictorArgs{
-			EvictLocalStoragePods:   false,
-			EvictSystemCriticalPods: false,
-			IgnorePvcPods:           false,
-			EvictFailedBarePods:     false,
-		}
 		profile.PluginConfig = append(
 			profile.PluginConfig, api.PluginConfig{
 				Name: defaultevictor.PluginName,
-				Args: rawExtensionArgs,
+				Args: &defaultevictor.DefaultEvictorArgs{
+					EvictLocalStoragePods:   false,
+					EvictSystemCriticalPods: false,
+					IgnorePvcPods:           false,
+					EvictFailedBarePods:     false,
+				},
 			},
 		)
 	}
@@ -441,7 +432,10 @@ func hasPluginConfigsWithSameName(newPluginConfig v1alpha2.PluginConfig, pluginC
 
 func configurePlugin(args runtime.Object, name string) v1alpha2.PluginConfig {
 	var pluginConfig v1alpha2.PluginConfig
+
+	// runtime.Convert_runtime_Object_To_runtime_RawExtension(&args, pluginConfig.Args)
 	pluginConfig.Args.Object = args
+	// pluginConfig.Args.Raw = []byte(args)
 	pluginConfig.Name = name
 	return pluginConfig
 }

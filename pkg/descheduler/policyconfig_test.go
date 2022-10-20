@@ -651,7 +651,7 @@ func TestDecodeVersionedPolicy(t *testing.T) {
 	}
 	testCases := []testCase{
 		{
-			description: "simple conversion",
+			description: "v1alpha1 to internal",
 			policy: []byte(`apiVersion: "descheduler/v1alpha1"
 kind: "DeschedulerPolicy"
 strategies:
@@ -672,20 +672,16 @@ strategies:
 						PluginConfig: []api.PluginConfig{
 							{
 								Name: podlifetime.PluginName,
-								Args: runtime.RawExtension{
-									Object: &podlifetime.PodLifeTimeArgs{
-										Namespaces: &api.Namespaces{
-											Include: []string{"testleaderelection-a"},
-										},
-										MaxPodLifeTimeSeconds: utilpointer.Uint(5),
+								Args: &podlifetime.PodLifeTimeArgs{
+									Namespaces: &api.Namespaces{
+										Include: []string{"testleaderelection-a"},
 									},
+									MaxPodLifeTimeSeconds: utilpointer.Uint(5),
 								},
 							},
 							{
 								Name: defaultevictor.PluginName,
-								Args: runtime.RawExtension{
-									Object: &defaultevictor.DefaultEvictorArgs{},
-								},
+								Args: &defaultevictor.DefaultEvictorArgs{},
 							},
 						},
 						Plugins: api.Plugins{
@@ -707,7 +703,7 @@ strategies:
 			},
 		},
 		{
-			description: "no conversion needed",
+			description: "v1aplha2 to internal",
 			policy: []byte(`apiVersion: "descheduler/v1alpha2"
 kind: "DeschedulerPolicy"
 profiles:
@@ -742,22 +738,18 @@ profiles:
 						PluginConfig: []api.PluginConfig{
 							{
 								Name: defaultevictor.PluginName,
-								Args: runtime.RawExtension{
-									Object: &defaultevictor.DefaultEvictorArgs{
-										EvictSystemCriticalPods: true,
-										EvictFailedBarePods:     true,
-										EvictLocalStoragePods:   true,
-										NodeFit:                 true,
-									},
+								Args: &defaultevictor.DefaultEvictorArgs{
+									EvictSystemCriticalPods: true,
+									EvictFailedBarePods:     true,
+									EvictLocalStoragePods:   true,
+									NodeFit:                 true,
 								},
 							},
 							{
 								Name: removepodshavingtoomanyrestarts.PluginName,
-								Args: runtime.RawExtension{
-									Object: &removepodshavingtoomanyrestarts.RemovePodsHavingTooManyRestartsArgs{
-										PodRestartThreshold:     100,
-										IncludingInitContainers: true,
-									},
+								Args: &removepodshavingtoomanyrestarts.RemovePodsHavingTooManyRestartsArgs{
+									PodRestartThreshold:     100,
+									IncludingInitContainers: true,
 								},
 							},
 						},

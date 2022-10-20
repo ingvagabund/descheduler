@@ -17,6 +17,8 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"sigs.k8s.io/descheduler/pkg/api"
+	"sigs.k8s.io/descheduler/pkg/api/v1alpha1"
+	"sigs.k8s.io/descheduler/pkg/api/v1alpha2"
 )
 
 // GroupName is the group name used in this package
@@ -37,6 +39,15 @@ func addKnownTypes(scheme *runtime.Scheme) error {
 		&api.DeschedulerPolicy{},
 		&RemovePodsViolatingNodeAffinityArgs{},
 	)
+	scheme.AddKnownTypes(api.SchemeGroupVersion,
+		&RemovePodsViolatingNodeAffinityArgs{},
+	)
+	scheme.AddKnownTypes(v1alpha1.SchemeGroupVersion,
+		&RemovePodsViolatingNodeAffinityArgs{},
+	)
+	scheme.AddKnownTypes(v1alpha2.SchemeGroupVersion,
+		&RemovePodsViolatingNodeAffinityArgs{},
+	)
 	return nil
 }
 
@@ -44,5 +55,5 @@ func init() {
 	// We only register manually written functions here. The registration of the
 	// generated functions takes place in the generated files. The separation
 	// makes the code compile even when the generated files are missing.
-	localSchemeBuilder.Register(addDefaultingFuncs)
+	localSchemeBuilder.Register(addDefaultingFuncs, addKnownTypes)
 }
