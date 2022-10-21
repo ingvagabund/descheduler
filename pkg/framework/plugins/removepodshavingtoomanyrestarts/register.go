@@ -18,7 +18,6 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"sigs.k8s.io/descheduler/pkg/api"
 	"sigs.k8s.io/descheduler/pkg/api/v1alpha1"
-	"sigs.k8s.io/descheduler/pkg/api/v1alpha2"
 )
 
 // GroupName is the group name used in this package
@@ -45,9 +44,9 @@ func addKnownTypes(scheme *runtime.Scheme) error {
 	scheme.AddKnownTypes(v1alpha1.SchemeGroupVersion,
 		&RemovePodsHavingTooManyRestartsArgs{},
 	)
-	scheme.AddKnownTypes(v1alpha2.SchemeGroupVersion,
-		&RemovePodsHavingTooManyRestartsArgs{},
-	)
+	// scheme.AddKnownTypes(v1alpha2.SchemeGroupVersion,
+	// 	&RemovePodsHavingTooManyRestartsArgs{},
+	// )
 	return nil
 }
 

@@ -25,12 +25,12 @@ import (
 type DefaultEvictorArgs struct {
 	metav1.TypeMeta
 
-	NodeSelector            string
-	EvictLocalStoragePods   bool
-	EvictSystemCriticalPods bool
-	IgnorePvcPods           bool
-	EvictFailedBarePods     bool
-	LabelSelector           *metav1.LabelSelector
-	PriorityThreshold       *api.PriorityThreshold
-	NodeFit                 bool
+	NodeSelector            string                 `json:"nodeSelector"`
+	EvictLocalStoragePods   bool                   `json:"evictLocalStoragePods"`
+	EvictSystemCriticalPods bool                   `json:"evictSystemCriticalPods"`
+	IgnorePvcPods           bool                   `json:"ignorePvcPods"`
+	EvictFailedBarePods     bool                   `json:"evictFailedBarePods"`
+	LabelSelector           *metav1.LabelSelector  `json:"labelSelector"`
+	PriorityThreshold       *api.PriorityThreshold `json:"PriorityThreshold"`
+	NodeFit                 bool                   `json:"nodeFit"`
 }

@@ -715,7 +715,7 @@ profiles:
         evictFailedBarePods: true
         evictLocalStoragePods: true
         nodeFit: true
-    - name: "PodsHavingTooManyRestarts"
+    - name: "RemovePodsHavingTooManyRestarts"
       args:
         podRestartThreshold: 100
         includingInitContainers: true
@@ -783,6 +783,7 @@ profiles:
 					t.Errorf("unexpected error: %s. Was expecting %s", err.Error(), tc.err.Error())
 				}
 			}
+			// fmt.Printf("tc.result: %#v\n\n   result: %#v\n", tc.result, result)
 			diff := cmp.Diff(tc.result, result)
 			if diff != "" && err == nil {
 				t.Errorf("test '%s' failed. Results are not deep equal. mismatch (-want +got):\n%s", tc.description, diff)

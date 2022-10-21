@@ -23,8 +23,13 @@ import (
 
 	"k8s.io/apimachinery/pkg/conversion"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/serializer"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
+	"k8s.io/klog/v2"
 	api "sigs.k8s.io/descheduler/pkg/api"
+
+	"sigs.k8s.io/descheduler/pkg/framework/plugins/defaultevictor"
+	"sigs.k8s.io/descheduler/pkg/framework/plugins/removepodshavingtoomanyrestarts"
 )
 
 var (
@@ -33,6 +38,9 @@ var (
 	// Access via getPluginArgConversionScheme()
 	pluginArgConversionScheme     *runtime.Scheme
 	initPluginArgConversionScheme sync.Once
+
+	Scheme = runtime.NewScheme()
+	Codecs = serializer.NewCodecFactory(Scheme, serializer.EnableStrict)
 )
 
 func GetPluginArgConversionScheme() *runtime.Scheme {
@@ -120,6 +128,34 @@ func Convert_api_DeschedulerPolicy_To_v1alpha2_DeschedulerPolicy(in *api.Desched
 		return err
 	}
 	return convertToExternalPluginConfigArgs(out)
+}
+
+func Convert_v1alpha2_PluginConfig_To_api_PluginConfig(in *PluginConfig, out *api.PluginConfig, s conversion.Scope) error {
+	klog.Infof("Convert_v1alpha2_PluginConfig_To_api_PluginConfig: %v", in.Name)
+	out.Name = in.Name
+	switch in.Name {
+	case "DefaultEvictor":
+		out.Args = &defaultevictor.DefaultEvictorArgs{}
+		klog.Infof("&defaultevictor.DefaultEvictorArgs{}")
+		klog.Infof("%#v", string(in.Args.Raw))
+		_, _, err := Codecs.UniversalDecoder().Decode(in.Args.Raw, nil, out.Args)
+		klog.Infof("obj: %#v\nerr: %v\n", out.Args, err)
+		klog.Infof("out.Args: %#v\n", out.Args)
+		return nil
+	case "RemovePodsHavingTooManyRestarts":
+		out.Args = &removepodshavingtoomanyrestarts.RemovePodsHavingTooManyRestartsArgs{}
+		klog.Infof("&removepodshavingtoomanyrestarts.RemovePodsHavingTooManyRestartsArgs{}")
+		klog.Infof("%#v", string(in.Args.Raw))
+		_, _, err := Codecs.UniversalDecoder().Decode(in.Args.Raw, nil, out.Args)
+		klog.Infof("obj: %#v\nerr: %v\n", out.Args, err)
+		klog.Infof("out.Args: %#v\n", out.Args)
+		return nil
+	default:
+		if err := runtime.Convert_runtime_RawExtension_To_runtime_Object(&in.Args, &out.Args, s); err != nil {
+			return err
+		}
+		return nil
+	}
 }
 
 // convertToExternalPluginConfigArgs converts PluginConfig#Args into

@@ -27,6 +27,6 @@ type RemovePodsHavingTooManyRestartsArgs struct {
 
 	Namespaces              *api.Namespaces
 	LabelSelector           *metav1.LabelSelector
-	PodRestartThreshold     int32
-	IncludingInitContainers bool
+	PodRestartThreshold     int32 `json:"podRestartThreshold"`
+	IncludingInitContainers bool  `json:"includingInitContainers"`
 }
