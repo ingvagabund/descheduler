@@ -83,7 +83,14 @@ type descheduler struct {
 	podEvictionReactionFnc func(*fakeclientset.Clientset) func(action core.Action) (bool, runtime.Object, error)
 }
 
-func newDescheduler(rs *options.DeschedulerServer, deschedulerPolicy *api.DeschedulerPolicy, evictionPolicyGroupVersion string, eventRecorder events.EventRecorder, sharedInformerFactory informers.SharedInformerFactory) (*descheduler, error) {
+func newDescheduler(
+	rs *options.DeschedulerServer,
+	deschedulerPolicy *api.DeschedulerPolicy,
+	evictionPolicyGroupVersion string,
+	eventRecorder events.EventRecorder,
+	sharedInformerFactory informers.SharedInformerFactory,
+	assumedRequestTimeout uint,
+) (*descheduler, error) {
 	podInformer := sharedInformerFactory.Core().V1().Pods().Informer()
 	podLister := sharedInformerFactory.Core().V1().Pods().Lister()
 	nodeLister := sharedInformerFactory.Core().V1().Nodes().Lister()
@@ -96,6 +103,7 @@ func newDescheduler(rs *options.DeschedulerServer, deschedulerPolicy *api.Desche
 	}
 
 	podEvictor := evictions.NewPodEvictor(
+		context.TODO(),
 		nil,
 		evictionPolicyGroupVersion,
 		rs.DryRun,
@@ -103,6 +111,8 @@ func newDescheduler(rs *options.DeschedulerServer, deschedulerPolicy *api.Desche
 		deschedulerPolicy.MaxNoOfPodsToEvictPerNamespace,
 		!rs.DisableMetrics,
 		eventRecorder,
+		podInformer,
+		assumedRequestTimeout,
 	)
 
 	return &descheduler{
@@ -411,7 +421,7 @@ func RunDeschedulerStrategies(ctx context.Context, rs *options.DeschedulerServer
 	eventBroadcaster, eventRecorder := utils.GetRecorderAndBroadcaster(ctx, eventClient)
 	defer eventBroadcaster.Shutdown()
 
-	descheduler, err := newDescheduler(rs, deschedulerPolicy, evictionPolicyGroupVersion, eventRecorder, sharedInformerFactory)
+	descheduler, err := newDescheduler(rs, deschedulerPolicy, evictionPolicyGroupVersion, eventRecorder, sharedInformerFactory, evictions.AssumedEvictionRequestTimeoutSeconds)
 	if err != nil {
 		span.AddEvent("Failed to create new descheduler", trace.WithAttributes(attribute.String("err", err.Error())))
 		return err

@@ -68,6 +68,11 @@ func (ei *evictorImpl) Evict(ctx context.Context, pod *v1.Pod, opts evictions.Ev
 	return ei.podEvictor.EvictPod(ctx, pod, opts)
 }
 
+// Evict evicts a pod (no pre-check performed)
+func (ei *evictorImpl) RequestEviction(ctx context.Context, pod *v1.Pod, opts evictions.EvictOptions) bool {
+	return ei.podEvictor.EvictPod(ctx, pod, opts)
+}
+
 func (ei *evictorImpl) NodeLimitExceeded(node *v1.Node) bool {
 	return ei.podEvictor.NodeLimitExceeded(node)
 }
