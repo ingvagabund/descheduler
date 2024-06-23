@@ -21,25 +21,48 @@ set -o nounset
 # Set to empty if unbound/empty
 SKIP_INSTALL=${SKIP_INSTALL:-}
 KIND_E2E=${KIND_E2E:-}
+CONTAINER_ENGINE=${CONTAINER_ENGINE:-docker}
+KIND_SUDO=${KIND_SUDO:-}
+SKIP_KUBECTL_INSTALL=${SKIP_KUBECTL_INSTALL:-}
+SKIP_KIND_INSTALL=${SKIP_KIND_INSTALL:-}
+INSTALL_KUBEVIRT=${INSTALL_KUBEVIRT:-y}
+KUBEVIRT_VERSION=${KUBEVIRT_VERSION:-v1.3.0-rc.1}
 
 # This just runs e2e tests.
 if [ -n "$KIND_E2E" ]; then
-    # If we did not set SKIP_INSTALL
-    if [ -z "$SKIP_INSTALL" ]; then
-        K8S_VERSION=${KUBERNETES_VERSION:-v1.30.0}
+    K8S_VERSION=${KUBERNETES_VERSION:-v1.30.0}
+    if [ -z "${SKIP_KUBECTL_INSTALL}" ]; then
         curl -Lo kubectl https://dl.k8s.io/release/${K8S_VERSION}/bin/linux/amd64/kubectl && chmod +x kubectl && mv kubectl /usr/local/bin/
-        wget https://github.com/kubernetes-sigs/kind/releases/download/v0.20.0/kind-linux-amd64
+    fi
+    if [ -z "${SKIP_KIND_INSTALL}" ]; then
+        wget https://github.com/kubernetes-sigs/kind/releases/download/v0.23.0/kind-linux-amd64
         chmod +x kind-linux-amd64
         mv kind-linux-amd64 kind
         export PATH=$PATH:$PWD
-        kind create cluster --image kindest/node:${K8S_VERSION} --config=./hack/kind_config.yaml
     fi
-    ${CONTAINER_ENGINE:-docker} pull registry.k8s.io/pause
-    kind load docker-image registry.k8s.io/pause
-    kind get kubeconfig > /tmp/admin.conf
+    # If we did not set SKIP_INSTALL
+    if [ -z "$SKIP_INSTALL" ]; then
+        ${KIND_SUDO} kind create cluster --image kindest/node:${K8S_VERSION} --config=./hack/kind_config.yaml
+    fi
+    ${CONTAINER_ENGINE} pull registry.k8s.io/pause
+    if [ "${CONTAINER_ENGINE}" == "podman" ]; then
+      podman save registry.k8s.io/pause -o /tmp/pause.tar
+      ${KIND_SUDO} kind load image-archive /tmp/pause.tar
+      rm /tmp/pause.tar
+    else
+      ${KIND_SUDO} kind load docker-image registry.k8s.io/pause
+    fi
+    ${KIND_SUDO} kind get kubeconfig > /tmp/admin.conf
     export KUBECONFIG="/tmp/admin.conf"
     mkdir -p ~/gopath/src/sigs.k8s.io/
 fi
 
-PRJ_PREFIX="sigs.k8s.io/descheduler"
-go test ${PRJ_PREFIX}/test/e2e/ -v
+if [ -n "${INSTALL_KUBEVIRT}" ]; then
+  kubectl create -f https://github.com/kubevirt/kubevirt/releases/download/${KUBEVIRT_VERSION}/kubevirt-operator.yaml
+  kubectl create -f https://github.com/kubevirt/kubevirt/releases/download/${KUBEVIRT_VERSION}/kubevirt-cr.yaml
+  kubectl wait --timeout=180s --for=condition=Available -n kubevirt kv/kubevirt
+  kubectl -n kubevirt patch kubevirt kubevirt --type=merge --patch '{"spec":{"configuration":{"developerConfiguration":{"useEmulation":true}}}}'
+fi
+
+# PRJ_PREFIX="sigs.k8s.io/descheduler"
+# go test ${PRJ_PREFIX}/test/e2e/ -v

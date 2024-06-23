@@ -160,8 +160,10 @@ func TestTooManyRestarts(t *testing.T) {
 			eventRecorder := &events.FakeRecorder{}
 
 			podEvictor := evictions.NewPodEvictor(
+				ctx,
 				clientSet,
 				eventRecorder,
+				sharedInformerFactory.Core().V1().Pods().Informer(),
 				evictions.NewOptions().WithPolicyGroupVersion(evictionPolicyGroupVersion),
 			)
 
