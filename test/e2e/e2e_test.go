@@ -34,6 +34,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/apimachinery/pkg/util/uuid"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/informers"
@@ -1814,4 +1815,29 @@ func getCurrentPodNames(ctx context.Context, clientSet clientset.Interface, name
 		names = append(names, item.Name)
 	}
 	return names
+}
+
+func checkEvictionExpectations(ctx context.Context, t *testing.T, clientSet clientset.Interface, namespace string, preRunNames sets.String, expectedEvictedPodCount int) {
+	var meetsExpectations bool
+	var actualEvictedPodCount int
+	if err := wait.PollUntilContextTimeout(ctx, 5*time.Second, 60*time.Second, true, func(ctx context.Context) (bool, error) {
+		currentRunNames := sets.NewString(getCurrentPodNames(ctx, clientSet, namespace, t)...)
+		actualEvictedPod := preRunNames.Difference(currentRunNames)
+		actualEvictedPodCount = actualEvictedPod.Len()
+		t.Logf("preRunNames: %v, currentRunNames: %v, actualEvictedPodCount: %v\n", preRunNames.List(), currentRunNames.List(), actualEvictedPodCount)
+		if actualEvictedPodCount != expectedEvictedPodCount {
+			t.Logf("Expecting %v number of pods evicted, got %v instead", expectedEvictedPodCount, actualEvictedPodCount)
+			return false, nil
+		}
+		meetsExpectations = true
+		return true, nil
+	}); err != nil {
+		t.Errorf("Error waiting for descheduler running: %v", err)
+	}
+
+	if !meetsExpectations {
+		t.Errorf("Unexpected number of pods have been evicted, got %v, expected %v", actualEvictedPodCount, expectedEvictedPodCount)
+	} else {
+		t.Logf("Total of %d Pods were evicted", actualEvictedPodCount)
+	}
 }
