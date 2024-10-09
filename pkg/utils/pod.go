@@ -125,6 +125,8 @@ func GetPodSource(pod *v1.Pod) (string, error) {
 	return "", fmt.Errorf("cannot get source of pod %q", pod.UID)
 }
 
+type PodUtilizationFnc func(pod *v1.Pod) (v1.ResourceList, error)
+
 // PodRequestsAndLimits returns a dictionary of all defined resources summed up for all
 // containers of the pod. If PodOverhead feature is enabled, pod overhead is added to the
 // total container resource requests and to the total container limits which have a

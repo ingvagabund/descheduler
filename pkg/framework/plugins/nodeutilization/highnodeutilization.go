@@ -24,12 +24,13 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/klog/v2"
+
 	"sigs.k8s.io/descheduler/pkg/api"
 	"sigs.k8s.io/descheduler/pkg/descheduler/evictions"
 	nodeutil "sigs.k8s.io/descheduler/pkg/descheduler/node"
-
 	podutil "sigs.k8s.io/descheduler/pkg/descheduler/pod"
 	frameworktypes "sigs.k8s.io/descheduler/pkg/framework/types"
+	"sigs.k8s.io/descheduler/pkg/utils"
 )
 
 const HighNodeUtilizationPluginName = "HighNodeUtilization"
@@ -38,9 +39,10 @@ const HighNodeUtilizationPluginName = "HighNodeUtilization"
 // Note that CPU/Memory requests are used to calculate nodes' utilization and not the actual resource usage.
 
 type HighNodeUtilization struct {
-	handle    frameworktypes.Handle
-	args      *HighNodeUtilizationArgs
-	podFilter func(pod *v1.Pod) bool
+	handle            frameworktypes.Handle
+	args              *HighNodeUtilizationArgs
+	podFilter         func(pod *v1.Pod) bool
+	podUtilizationFnc utils.PodUtilizationFnc
 }
 
 var _ frameworktypes.BalancePlugin = &HighNodeUtilization{}
@@ -63,6 +65,10 @@ func NewHighNodeUtilization(args runtime.Object, handle frameworktypes.Handle) (
 		handle:    handle,
 		args:      highNodeUtilizatioArgs,
 		podFilter: podFilter,
+		podUtilizationFnc: func(pod *v1.Pod) (v1.ResourceList, error) {
+			req, _ := utils.PodRequestsAndLimits(pod)
+			return req, nil
+		},
 	}, nil
 }
 
@@ -79,9 +85,23 @@ func (h *HighNodeUtilization) Balance(ctx context.Context, nodes []*v1.Node) *fr
 	setDefaultForThresholds(thresholds, targetThresholds)
 	resourceNames := getResourceNames(targetThresholds)
 
+	nodeUsage, err := getNodeUsage(nodes, resourceNames, h.handle.GetPodsAssignedToNodeFunc(), h.podUtilizationFnc)
+	if err != nil {
+		return &frameworktypes.Status{
+			Err: fmt.Errorf("error getting node usage: %v", err),
+		}
+	}
+
+	nodeThresholds, err := getNodeThresholds(nodes, thresholds, targetThresholds, resourceNames, h.handle.GetPodsAssignedToNodeFunc(), false, h.podUtilizationFnc)
+	if err != nil {
+		return &frameworktypes.Status{
+			Err: fmt.Errorf("error getting node thresholds: %v", err),
+		}
+	}
+
 	sourceNodes, highNodes := classifyNodes(
-		getNodeUsage(nodes, resourceNames, h.handle.GetPodsAssignedToNodeFunc()),
-		getNodeThresholds(nodes, thresholds, targetThresholds, resourceNames, h.handle.GetPodsAssignedToNodeFunc(), false),
+		nodeUsage,
+		nodeThresholds,
 		func(node *v1.Node, usage NodeUsage, threshold NodeThresholds) bool {
 			return isNodeWithLowUtilization(usage, threshold.lowResourceThreshold)
 		},

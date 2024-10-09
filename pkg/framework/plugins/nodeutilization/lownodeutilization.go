@@ -28,6 +28,7 @@ import (
 	nodeutil "sigs.k8s.io/descheduler/pkg/descheduler/node"
 	podutil "sigs.k8s.io/descheduler/pkg/descheduler/pod"
 	frameworktypes "sigs.k8s.io/descheduler/pkg/framework/types"
+	"sigs.k8s.io/descheduler/pkg/utils"
 )
 
 const LowNodeUtilizationPluginName = "LowNodeUtilization"
@@ -36,9 +37,10 @@ const LowNodeUtilizationPluginName = "LowNodeUtilization"
 // to calculate nodes' utilization and not the actual resource usage.
 
 type LowNodeUtilization struct {
-	handle    frameworktypes.Handle
-	args      *LowNodeUtilizationArgs
-	podFilter func(pod *v1.Pod) bool
+	handle         frameworktypes.Handle
+	args           *LowNodeUtilizationArgs
+	podFilter      func(pod *v1.Pod) bool
+	podUtilizationFnc utils.PodUtilizationFnc
 }
 
 var _ frameworktypes.BalancePlugin = &LowNodeUtilization{}
@@ -61,6 +63,10 @@ func NewLowNodeUtilization(args runtime.Object, handle frameworktypes.Handle) (f
 		handle:    handle,
 		args:      lowNodeUtilizationArgsArgs,
 		podFilter: podFilter,
+		podUtilizationFnc: func(pod *v1.Pod) (v1.ResourceList, error) {
+			req, _ := utils.PodRequestsAndLimits(pod)
+			return req, nil
+		},
 	}, nil
 }
 
@@ -105,9 +111,23 @@ func (l *LowNodeUtilization) Balance(ctx context.Context, nodes []*v1.Node) *fra
 	}
 	resourceNames := getResourceNames(thresholds)
 
+	nodeUsage, err := getNodeUsage(nodes, resourceNames, l.handle.GetPodsAssignedToNodeFunc(), l.podUtilizationFnc)
+	if err != nil {
+		return &frameworktypes.Status{
+			Err: fmt.Errorf("error getting node usage: %v", err),
+		}
+	}
+
+	nodeThresholds, err := getNodeThresholds(nodes, thresholds, targetThresholds, resourceNames, l.handle.GetPodsAssignedToNodeFunc(), useDeviationThresholds, l.podUtilizationFnc)
+	if err != nil {
+		return &frameworktypes.Status{
+			Err: fmt.Errorf("error getting node thresholds: %v", err),
+		}
+	}
+
 	lowNodes, sourceNodes := classifyNodes(
-		getNodeUsage(nodes, resourceNames, l.handle.GetPodsAssignedToNodeFunc()),
-		getNodeThresholds(nodes, thresholds, targetThresholds, resourceNames, l.handle.GetPodsAssignedToNodeFunc(), useDeviationThresholds),
+		nodeUsage,
+		nodeThresholds,
 		// The node has to be schedulable (to be able to move workload there)
 		func(node *v1.Node, usage NodeUsage, threshold NodeThresholds) bool {
 			if nodeutil.IsNodeUnschedulable(node) {
