@@ -85,7 +85,7 @@ func (h *HighNodeUtilization) Balance(ctx context.Context, nodes []*v1.Node) *fr
 	setDefaultForThresholds(thresholds, targetThresholds)
 	resourceNames := getResourceNames(targetThresholds)
 
-	nodeUsage, err := getNodeUsage(nodes, resourceNames, h.handle.GetPodsAssignedToNodeFunc(), h.podUtilizationFnc)
+	usageSnapshot, err := newUsageSnapshot(nodes, resourceNames, h.handle.GetPodsAssignedToNodeFunc(), h.podUtilizationFnc)
 	if err != nil {
 		return &frameworktypes.Status{
 			Err: fmt.Errorf("error getting node usage: %v", err),
@@ -100,7 +100,7 @@ func (h *HighNodeUtilization) Balance(ctx context.Context, nodes []*v1.Node) *fr
 	}
 
 	sourceNodes, highNodes := classifyNodes(
-		nodeUsage,
+		getNodeUsage(nodes, usageSnapshot),
 		nodeThresholds,
 		func(node *v1.Node, usage NodeUsage, threshold NodeThresholds) bool {
 			return isNodeWithLowUtilization(usage, threshold.lowResourceThreshold)

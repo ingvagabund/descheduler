@@ -124,13 +124,35 @@ func getNodeThresholds(
 	return nodeThresholdsMap, nil
 }
 
-func getNodeUsage(
+type usageSnapshot struct {
+	_nodes           []*v1.Node
+	_pods            map[string][]*v1.Pod
+	_nodeUtilization map[string]map[v1.ResourceName]*resource.Quantity
+}
+
+func (s usageSnapshot) nodeUtilization(node string) map[v1.ResourceName]*resource.Quantity {
+	return s._nodeUtilization[node]
+}
+
+func (s usageSnapshot) nodes() []*v1.Node {
+	return s._nodes
+}
+
+func (s usageSnapshot) pods(node string) []*v1.Pod {
+	return s._pods[node]
+}
+
+func newUsageSnapshot(
 	nodes []*v1.Node,
 	resourceNames []v1.ResourceName,
 	getPodsAssignedToNode podutil.GetPodsAssignedToNodeFunc,
 	podUtilization utils.PodUtilizationFnc,
-) ([]NodeUsage, error) {
-	var nodeUsageList []NodeUsage
+) (*usageSnapshot, error) {
+
+	snapshot := &usageSnapshot{
+		_nodeUtilization: make(map[string]map[v1.ResourceName]*resource.Quantity),
+		_pods:            make(map[string][]*v1.Pod),
+	}
 
 	for _, node := range nodes {
 		pods, err := podutil.ListPodsOnANode(node.Name, getPodsAssignedToNode, nil)
@@ -149,14 +171,31 @@ func getNodeUsage(
 			return nil, err
 		}
 
+		// store the snapshot of pods from the same (or the closest) node utilization computation
+		snapshot._pods[node.Name] = pods
+		snapshot._nodeUtilization[node.Name] = nodeUsage
+	}
+
+	return snapshot, nil
+}
+
+type nodeUtilizationFnc func(node *v1.Node) (v1.ResourceList, error)
+
+func getNodeUsage(
+	nodes []*v1.Node,
+	usageSnapshot *usageSnapshot,
+) []NodeUsage {
+	var nodeUsageList []NodeUsage
+
+	for _, node := range nodes {
 		nodeUsageList = append(nodeUsageList, NodeUsage{
 			node:    node,
-			usage:   nodeUsage,
-			allPods: pods,
+			usage:   usageSnapshot.nodeUtilization(node.Name),
+			allPods: usageSnapshot.pods(node.Name),
 		})
 	}
 
-	return nodeUsageList, nil
+	return nodeUsageList
 }
 
 func resourceThreshold(nodeCapacity v1.ResourceList, resourceName v1.ResourceName, threshold api.Percentage) *resource.Quantity {
@@ -463,7 +502,7 @@ func averageNodeBasicresources(nodes []*v1.Node, getPodsAssignedToNode podutil.G
 			numberOfNodes--
 			continue
 		}
-		usage, err := nodeutil.NodeUtilization(pods, resourceNames,podUtilization)
+		usage, err := nodeutil.NodeUtilization(pods, resourceNames, podUtilization)
 		if err != nil {
 			return nil, err
 		}

@@ -37,9 +37,9 @@ const LowNodeUtilizationPluginName = "LowNodeUtilization"
 // to calculate nodes' utilization and not the actual resource usage.
 
 type LowNodeUtilization struct {
-	handle         frameworktypes.Handle
-	args           *LowNodeUtilizationArgs
-	podFilter      func(pod *v1.Pod) bool
+	handle            frameworktypes.Handle
+	args              *LowNodeUtilizationArgs
+	podFilter         func(pod *v1.Pod) bool
 	podUtilizationFnc utils.PodUtilizationFnc
 }
 
@@ -111,7 +111,7 @@ func (l *LowNodeUtilization) Balance(ctx context.Context, nodes []*v1.Node) *fra
 	}
 	resourceNames := getResourceNames(thresholds)
 
-	nodeUsage, err := getNodeUsage(nodes, resourceNames, l.handle.GetPodsAssignedToNodeFunc(), l.podUtilizationFnc)
+	usageSnapshot, err := newUsageSnapshot(nodes, resourceNames, l.handle.GetPodsAssignedToNodeFunc(), l.podUtilizationFnc)
 	if err != nil {
 		return &frameworktypes.Status{
 			Err: fmt.Errorf("error getting node usage: %v", err),
@@ -126,7 +126,7 @@ func (l *LowNodeUtilization) Balance(ctx context.Context, nodes []*v1.Node) *fra
 	}
 
 	lowNodes, sourceNodes := classifyNodes(
-		nodeUsage,
+		getNodeUsage(nodes, usageSnapshot),
 		nodeThresholds,
 		// The node has to be schedulable (to be able to move workload there)
 		func(node *v1.Node, usage NodeUsage, threshold NodeThresholds) bool {
