@@ -42,7 +42,6 @@ type HighNodeUtilization struct {
 	handle            frameworktypes.Handle
 	args              *HighNodeUtilizationArgs
 	podFilter         func(pod *v1.Pod) bool
-	podUtilizationFnc utils.PodUtilizationFnc
 	resourceNames     []v1.ResourceName
 	usageSnapshot     *usageSnapshot
 	targetThresholds  api.ResourceThresholds
@@ -78,7 +77,6 @@ func NewHighNodeUtilization(args runtime.Object, handle frameworktypes.Handle) (
 		handle:            handle,
 		args:              highNodeUtilizatioArgs,
 		podFilter:         podFilter,
-		podUtilizationFnc: podUtilizationFnc,
 		resourceNames:     resourceNames,
 		usageSnapshot:     newUsageSnapshot(resourceNames, handle.GetPodsAssignedToNodeFunc(), podUtilizationFnc),
 		targetThresholds:  targetThresholds,
@@ -101,16 +99,9 @@ func (h *HighNodeUtilization) Balance(ctx context.Context, nodes []*v1.Node) *fr
 		}
 	}
 
-	nodeThresholds, err := getNodeThresholds(nodes, thresholds, targetThresholds, h.resourceNames, h.handle.GetPodsAssignedToNodeFunc(), false, h.podUtilizationFnc)
-	if err != nil {
-		return &frameworktypes.Status{
-			Err: fmt.Errorf("error getting node thresholds: %v", err),
-		}
-	}
-
 	sourceNodes, highNodes := classifyNodes(
 		getNodeUsage(nodes, h.usageSnapshot),
-		nodeThresholds,
+		getNodeThresholds(nodes, thresholds, targetThresholds, h.resourceNames, false, h.usageSnapshot),
 		func(node *v1.Node, usage NodeUsage, threshold NodeThresholds) bool {
 			return isNodeWithLowUtilization(usage, threshold.lowResourceThreshold)
 		},

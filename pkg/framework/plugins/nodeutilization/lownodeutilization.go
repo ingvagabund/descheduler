@@ -40,7 +40,6 @@ type LowNodeUtilization struct {
 	handle                   frameworktypes.Handle
 	args                     *LowNodeUtilizationArgs
 	podFilter                func(pod *v1.Pod) bool
-	podUtilizationFnc        utils.PodUtilizationFnc
 	resourceNames            []v1.ResourceName
 	underutilizationCriteria []interface{}
 	overutilizationCriteria  []interface{}
@@ -125,7 +124,6 @@ func NewLowNodeUtilization(args runtime.Object, handle frameworktypes.Handle) (f
 		handle:                   handle,
 		args:                     lowNodeUtilizationArgsArgs,
 		podFilter:                podFilter,
-		podUtilizationFnc:        podUtilizationFnc,
 		resourceNames:            resourceNames,
 		underutilizationCriteria: underutilizationCriteria,
 		overutilizationCriteria:  overutilizationCriteria,
@@ -146,16 +144,9 @@ func (l *LowNodeUtilization) Balance(ctx context.Context, nodes []*v1.Node) *fra
 		}
 	}
 
-	nodeThresholds, err := getNodeThresholds(nodes, l.args.Thresholds, l.args.TargetThresholds, l.resourceNames, l.handle.GetPodsAssignedToNodeFunc(), l.args.UseDeviationThresholds, l.podUtilizationFnc)
-	if err != nil {
-		return &frameworktypes.Status{
-			Err: fmt.Errorf("error getting node thresholds: %v", err),
-		}
-	}
-
 	lowNodes, sourceNodes := classifyNodes(
 		getNodeUsage(nodes, l.usageSnapshot),
-		nodeThresholds,
+		getNodeThresholds(nodes, l.args.Thresholds, l.args.TargetThresholds, l.resourceNames, l.args.UseDeviationThresholds, l.usageSnapshot),
 		// The node has to be schedulable (to be able to move workload there)
 		func(node *v1.Node, usage NodeUsage, threshold NodeThresholds) bool {
 			if nodeutil.IsNodeUnschedulable(node) {
