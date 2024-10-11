@@ -119,7 +119,6 @@ func getNodeThresholds(
 				nodeThresholdsMap[node.Name].highResourceThreshold[resourceName] = resourceThreshold(nodeCapacity, resourceName, highThreshold[resourceName])
 			}
 		}
-
 	}
 	return nodeThresholdsMap, nil
 }
@@ -158,7 +157,7 @@ func newUsageSnapshot(
 	}
 }
 
-func (s usageSnapshot) capture(nodes []*v1.Node) error {
+func (s *usageSnapshot) capture(nodes []*v1.Node) error {
 	s._nodeUtilization = make(map[string]map[v1.ResourceName]*resource.Quantity)
 	s._pods = make(map[string][]*v1.Pod)
 

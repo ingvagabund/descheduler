@@ -43,7 +43,9 @@ type HighNodeUtilization struct {
 	args              *HighNodeUtilizationArgs
 	podFilter         func(pod *v1.Pod) bool
 	podUtilizationFnc utils.PodUtilizationFnc
+	resourceNames     []v1.ResourceName
 	usageSnapshot     *usageSnapshot
+	targetThresholds  api.ResourceThresholds
 }
 
 var _ frameworktypes.BalancePlugin = &HighNodeUtilization{}
@@ -62,19 +64,24 @@ func NewHighNodeUtilization(args runtime.Object, handle frameworktypes.Handle) (
 		return nil, fmt.Errorf("error initializing pod filter function: %v", err)
 	}
 
-	resourceNames := getResourceNames(highNodeUtilizatioArgs.Thresholds)
-
 	podUtilizationFnc := func(pod *v1.Pod) (v1.ResourceList, error) {
 		req, _ := utils.PodRequestsAndLimits(pod)
 		return req, nil
 	}
+
+	targetThresholds := make(api.ResourceThresholds)
+	setDefaultForThresholds(highNodeUtilizatioArgs.Thresholds, targetThresholds)
+
+	resourceNames := getResourceNames(highNodeUtilizatioArgs.Thresholds)
 
 	return &HighNodeUtilization{
 		handle:            handle,
 		args:              highNodeUtilizatioArgs,
 		podFilter:         podFilter,
 		podUtilizationFnc: podUtilizationFnc,
+		resourceNames:     resourceNames,
 		usageSnapshot:     newUsageSnapshot(resourceNames, handle.GetPodsAssignedToNodeFunc(), podUtilizationFnc),
+		targetThresholds:  targetThresholds,
 	}, nil
 }
 
@@ -86,10 +93,7 @@ func (h *HighNodeUtilization) Name() string {
 // Balance extension point implementation for the plugin
 func (h *HighNodeUtilization) Balance(ctx context.Context, nodes []*v1.Node) *frameworktypes.Status {
 	thresholds := h.args.Thresholds
-	targetThresholds := make(api.ResourceThresholds)
-
-	setDefaultForThresholds(thresholds, targetThresholds)
-	resourceNames := getResourceNames(targetThresholds)
+	targetThresholds := h.targetThresholds
 
 	if err := h.usageSnapshot.capture(nodes); err != nil {
 		return &frameworktypes.Status{
@@ -97,7 +101,7 @@ func (h *HighNodeUtilization) Balance(ctx context.Context, nodes []*v1.Node) *fr
 		}
 	}
 
-	nodeThresholds, err := getNodeThresholds(nodes, thresholds, targetThresholds, resourceNames, h.handle.GetPodsAssignedToNodeFunc(), false, h.podUtilizationFnc)
+	nodeThresholds, err := getNodeThresholds(nodes, thresholds, targetThresholds, h.resourceNames, h.handle.GetPodsAssignedToNodeFunc(), false, h.podUtilizationFnc)
 	if err != nil {
 		return &frameworktypes.Status{
 			Err: fmt.Errorf("error getting node thresholds: %v", err),
@@ -172,7 +176,7 @@ func (h *HighNodeUtilization) Balance(ctx context.Context, nodes []*v1.Node) *fr
 		h.handle.Evictor(),
 		evictions.EvictOptions{StrategyName: HighNodeUtilizationPluginName},
 		h.podFilter,
-		resourceNames,
+		h.resourceNames,
 		continueEvictionCond)
 
 	return nil
