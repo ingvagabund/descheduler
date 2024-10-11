@@ -43,6 +43,7 @@ type HighNodeUtilization struct {
 	args              *HighNodeUtilizationArgs
 	podFilter         func(pod *v1.Pod) bool
 	podUtilizationFnc utils.PodUtilizationFnc
+	usageSnapshot     *usageSnapshot
 }
 
 var _ frameworktypes.BalancePlugin = &HighNodeUtilization{}
@@ -61,14 +62,19 @@ func NewHighNodeUtilization(args runtime.Object, handle frameworktypes.Handle) (
 		return nil, fmt.Errorf("error initializing pod filter function: %v", err)
 	}
 
+	resourceNames := getResourceNames(highNodeUtilizatioArgs.Thresholds)
+
+	podUtilizationFnc := func(pod *v1.Pod) (v1.ResourceList, error) {
+		req, _ := utils.PodRequestsAndLimits(pod)
+		return req, nil
+	}
+
 	return &HighNodeUtilization{
-		handle:    handle,
-		args:      highNodeUtilizatioArgs,
-		podFilter: podFilter,
-		podUtilizationFnc: func(pod *v1.Pod) (v1.ResourceList, error) {
-			req, _ := utils.PodRequestsAndLimits(pod)
-			return req, nil
-		},
+		handle:            handle,
+		args:              highNodeUtilizatioArgs,
+		podFilter:         podFilter,
+		podUtilizationFnc: podUtilizationFnc,
+		usageSnapshot:     newUsageSnapshot(resourceNames, handle.GetPodsAssignedToNodeFunc(), podUtilizationFnc),
 	}, nil
 }
 
@@ -85,8 +91,7 @@ func (h *HighNodeUtilization) Balance(ctx context.Context, nodes []*v1.Node) *fr
 	setDefaultForThresholds(thresholds, targetThresholds)
 	resourceNames := getResourceNames(targetThresholds)
 
-	usageSnapshot, err := newUsageSnapshot(nodes, resourceNames, h.handle.GetPodsAssignedToNodeFunc(), h.podUtilizationFnc)
-	if err != nil {
+	if err := h.usageSnapshot.capture(nodes); err != nil {
 		return &frameworktypes.Status{
 			Err: fmt.Errorf("error getting node usage: %v", err),
 		}
@@ -100,7 +105,7 @@ func (h *HighNodeUtilization) Balance(ctx context.Context, nodes []*v1.Node) *fr
 	}
 
 	sourceNodes, highNodes := classifyNodes(
-		getNodeUsage(nodes, usageSnapshot),
+		getNodeUsage(nodes, h.usageSnapshot),
 		nodeThresholds,
 		func(node *v1.Node, usage NodeUsage, threshold NodeThresholds) bool {
 			return isNodeWithLowUtilization(usage, threshold.lowResourceThreshold)

@@ -44,6 +44,7 @@ type LowNodeUtilization struct {
 	resourceNames            []v1.ResourceName
 	underutilizationCriteria []interface{}
 	overutilizationCriteria  []interface{}
+	usageSnapshot            *usageSnapshot
 }
 
 var _ frameworktypes.BalancePlugin = &LowNodeUtilization{}
@@ -113,17 +114,22 @@ func NewLowNodeUtilization(args runtime.Object, handle frameworktypes.Handle) (f
 		}
 	}
 
+	resourceNames := getResourceNames(lowNodeUtilizationArgsArgs.Thresholds)
+
+	podUtilizationFnc := func(pod *v1.Pod) (v1.ResourceList, error) {
+		req, _ := utils.PodRequestsAndLimits(pod)
+		return req, nil
+	}
+
 	return &LowNodeUtilization{
-		handle:    handle,
-		args:      lowNodeUtilizationArgsArgs,
-		podFilter: podFilter,
-		podUtilizationFnc: func(pod *v1.Pod) (v1.ResourceList, error) {
-			req, _ := utils.PodRequestsAndLimits(pod)
-			return req, nil
-		},
-		resourceNames:            getResourceNames(lowNodeUtilizationArgsArgs.Thresholds),
+		handle:                   handle,
+		args:                     lowNodeUtilizationArgsArgs,
+		podFilter:                podFilter,
+		podUtilizationFnc:        podUtilizationFnc,
+		resourceNames:            resourceNames,
 		underutilizationCriteria: underutilizationCriteria,
 		overutilizationCriteria:  overutilizationCriteria,
+		usageSnapshot:            newUsageSnapshot(resourceNames, handle.GetPodsAssignedToNodeFunc(), podUtilizationFnc),
 	}, nil
 }
 
@@ -134,8 +140,7 @@ func (l *LowNodeUtilization) Name() string {
 
 // Balance extension point implementation for the plugin
 func (l *LowNodeUtilization) Balance(ctx context.Context, nodes []*v1.Node) *frameworktypes.Status {
-	usageSnapshot, err := newUsageSnapshot(nodes, l.resourceNames, l.handle.GetPodsAssignedToNodeFunc(), l.podUtilizationFnc)
-	if err != nil {
+	if err := l.usageSnapshot.capture(nodes); err != nil {
 		return &frameworktypes.Status{
 			Err: fmt.Errorf("error getting node usage: %v", err),
 		}
@@ -149,7 +154,7 @@ func (l *LowNodeUtilization) Balance(ctx context.Context, nodes []*v1.Node) *fra
 	}
 
 	lowNodes, sourceNodes := classifyNodes(
-		getNodeUsage(nodes, usageSnapshot),
+		getNodeUsage(nodes, l.usageSnapshot),
 		nodeThresholds,
 		// The node has to be schedulable (to be able to move workload there)
 		func(node *v1.Node, usage NodeUsage, threshold NodeThresholds) bool {
