@@ -16,11 +16,16 @@ import (
 	fakeclientset "k8s.io/client-go/kubernetes/fake"
 	core "k8s.io/client-go/testing"
 	"k8s.io/klog/v2"
+	"k8s.io/metrics/pkg/apis/metrics/v1beta1"
+	metricsclient "k8s.io/metrics/pkg/client/clientset/versioned"
+	fakemetricsclient "k8s.io/metrics/pkg/client/clientset/versioned/fake"
 	utilptr "k8s.io/utils/ptr"
+
 	"sigs.k8s.io/descheduler/cmd/descheduler/app/options"
 	"sigs.k8s.io/descheduler/pkg/api"
 	"sigs.k8s.io/descheduler/pkg/framework/pluginregistry"
 	"sigs.k8s.io/descheduler/pkg/framework/plugins/defaultevictor"
+	"sigs.k8s.io/descheduler/pkg/framework/plugins/nodeutilization"
 	"sigs.k8s.io/descheduler/pkg/framework/plugins/removeduplicates"
 	"sigs.k8s.io/descheduler/pkg/framework/plugins/removepodsviolatingnodetaints"
 	"sigs.k8s.io/descheduler/pkg/utils"
@@ -33,6 +38,7 @@ func initPluginRegistry() {
 	pluginregistry.Register(removeduplicates.PluginName, removeduplicates.New, &removeduplicates.RemoveDuplicates{}, &removeduplicates.RemoveDuplicatesArgs{}, removeduplicates.ValidateRemoveDuplicatesArgs, removeduplicates.SetDefaults_RemoveDuplicatesArgs, pluginregistry.PluginRegistry)
 	pluginregistry.Register(defaultevictor.PluginName, defaultevictor.New, &defaultevictor.DefaultEvictor{}, &defaultevictor.DefaultEvictorArgs{}, defaultevictor.ValidateDefaultEvictorArgs, defaultevictor.SetDefaults_DefaultEvictorArgs, pluginregistry.PluginRegistry)
 	pluginregistry.Register(removepodsviolatingnodetaints.PluginName, removepodsviolatingnodetaints.New, &removepodsviolatingnodetaints.RemovePodsViolatingNodeTaints{}, &removepodsviolatingnodetaints.RemovePodsViolatingNodeTaintsArgs{}, removepodsviolatingnodetaints.ValidateRemovePodsViolatingNodeTaintsArgs, removepodsviolatingnodetaints.SetDefaults_RemovePodsViolatingNodeTaintsArgs, pluginregistry.PluginRegistry)
+	pluginregistry.Register(nodeutilization.LowNodeUtilizationPluginName, nodeutilization.NewLowNodeUtilization, &nodeutilization.LowNodeUtilization{}, &nodeutilization.LowNodeUtilizationArgs{}, nodeutilization.ValidateLowNodeUtilizationArgs, nodeutilization.SetDefaults_LowNodeUtilizationArgs, pluginregistry.PluginRegistry)
 }
 
 func removePodsViolatingNodeTaintsPolicy() *api.DeschedulerPolicy {
@@ -99,7 +105,45 @@ func removeDuplicatesPolicy() *api.DeschedulerPolicy {
 	}
 }
 
-func initDescheduler(t *testing.T, ctx context.Context, internalDeschedulerPolicy *api.DeschedulerPolicy, objects ...runtime.Object) (*options.DeschedulerServer, *descheduler, *fakeclientset.Clientset) {
+func lowNodeUtilizationPolicy(thresholds, targetThresholds api.ResourceThresholds, metricsEnabled bool) *api.DeschedulerPolicy {
+	return &api.DeschedulerPolicy{
+		Profiles: []api.DeschedulerProfile{
+			{
+				Name: "Profile",
+				PluginConfigs: []api.PluginConfig{
+					{
+						Name: nodeutilization.LowNodeUtilizationPluginName,
+						Args: &nodeutilization.LowNodeUtilizationArgs{
+							Thresholds:       thresholds,
+							TargetThresholds: targetThresholds,
+							MetricsUtilization: nodeutilization.MetricsUtilization{
+								MetricsServer: metricsEnabled,
+							},
+						},
+					},
+					{
+						Name: defaultevictor.PluginName,
+						Args: &defaultevictor.DefaultEvictorArgs{},
+					},
+				},
+				Plugins: api.Plugins{
+					Filter: api.PluginSet{
+						Enabled: []string{
+							defaultevictor.PluginName,
+						},
+					},
+					Balance: api.PluginSet{
+						Enabled: []string{
+							nodeutilization.LowNodeUtilizationPluginName,
+						},
+					},
+				},
+			},
+		},
+	}
+}
+
+func initDescheduler(t *testing.T, ctx context.Context, internalDeschedulerPolicy *api.DeschedulerPolicy, metricsClient metricsclient.Interface, objects ...runtime.Object) (*options.DeschedulerServer, *descheduler, *fakeclientset.Clientset) {
 	client := fakeclientset.NewSimpleClientset(objects...)
 	eventClient := fakeclientset.NewSimpleClientset(objects...)
 
@@ -109,6 +153,7 @@ func initDescheduler(t *testing.T, ctx context.Context, internalDeschedulerPolic
 	}
 	rs.Client = client
 	rs.EventClient = eventClient
+	rs.MetricsClient = metricsClient
 
 	sharedInformerFactory := informers.NewSharedInformerFactoryWithOptions(rs.Client, 0, informers.WithTransform(trimManagedFields))
 	eventBroadcaster, eventRecorder := utils.GetRecorderAndBroadcaster(ctx, client)
@@ -402,7 +447,7 @@ func TestPodEvictorReset(t *testing.T) {
 
 	internalDeschedulerPolicy := removePodsViolatingNodeTaintsPolicy()
 	ctxCancel, cancel := context.WithCancel(ctx)
-	rs, descheduler, client := initDescheduler(t, ctxCancel, internalDeschedulerPolicy, node1, node2, p1, p2)
+	rs, descheduler, client := initDescheduler(t, ctxCancel, internalDeschedulerPolicy, nil, node1, node2, p1, p2)
 	defer cancel()
 
 	var evictedPods []string
@@ -503,7 +548,7 @@ func TestDeschedulingLimits(t *testing.T) {
 			node2 := test.BuildTestNode("n2", 2000, 3000, 10, nil)
 			nodes := []*v1.Node{node1, node2}
 			ctxCancel, cancel := context.WithCancel(ctx)
-			_, descheduler, client := initDescheduler(t, ctxCancel, tc.policy, node1, node2)
+			_, descheduler, client := initDescheduler(t, ctxCancel, tc.policy, nil, node1, node2)
 			defer cancel()
 
 			pods := []*v1.Pod{
@@ -538,4 +583,83 @@ func TestDeschedulingLimits(t *testing.T) {
 			t.Logf("Total evictions: %v", totalEs)
 		})
 	}
+}
+
+func TestLoadAwareDescheduling(t *testing.T) {
+	initPluginRegistry()
+
+	ownerRef1 := test.GetReplicaSetOwnerRefList()
+	updatePod := func(pod *v1.Pod) {
+		pod.ObjectMeta.OwnerReferences = ownerRef1
+	}
+
+	ctx := context.Background()
+	node1 := test.BuildTestNode("n1", 2000, 3000, 10, taintNodeNoSchedule)
+	node2 := test.BuildTestNode("n2", 2000, 3000, 10, nil)
+	nodes := []*v1.Node{node1, node2}
+
+	p1 := test.BuildTestPod("p1", 300, 0, node1.Name, updatePod)
+	p2 := test.BuildTestPod("p2", 300, 0, node1.Name, updatePod)
+	p3 := test.BuildTestPod("p3", 300, 0, node1.Name, updatePod)
+	p4 := test.BuildTestPod("p4", 300, 0, node1.Name, updatePod)
+	p5 := test.BuildTestPod("p5", 300, 0, node1.Name, updatePod)
+
+	nodemetricses := []*v1beta1.NodeMetrics{
+		test.BuildNodeMetrics("n1", 2400, 3000),
+		test.BuildNodeMetrics("n2", 400, 0),
+	}
+
+	podmetricses := []*v1beta1.PodMetrics{
+		test.BuildPodMetrics("p1", 400, 0),
+		test.BuildPodMetrics("p2", 400, 0),
+		test.BuildPodMetrics("p3", 400, 0),
+		test.BuildPodMetrics("p4", 400, 0),
+		test.BuildPodMetrics("p5", 400, 0),
+	}
+
+	var metricsObjs []runtime.Object
+	for _, nodemetrics := range nodemetricses {
+		metricsObjs = append(metricsObjs, nodemetrics)
+	}
+	for _, podmetrics := range podmetricses {
+		metricsObjs = append(metricsObjs, podmetrics)
+	}
+
+	metricsClientset := fakemetricsclient.NewSimpleClientset(metricsObjs...)
+
+	policy := lowNodeUtilizationPolicy(
+		api.ResourceThresholds{
+			v1.ResourceCPU:  30,
+			v1.ResourcePods: 30,
+		},
+		api.ResourceThresholds{
+			v1.ResourceCPU:  50,
+			v1.ResourcePods: 50,
+		},
+		true, // enabled metrics utilization
+	)
+	policy.MetricsCollector.Enabled = true
+
+	ctxCancel, cancel := context.WithCancel(ctx)
+	_, descheduler, _ := initDescheduler(
+		t,
+		ctxCancel,
+		policy,
+		metricsClientset,
+		node1, node2, p1, p2, p3, p4, p5)
+	defer cancel()
+
+	// This needs to be run since the metrics collector is started
+	// after newDescheduler in RunDeschedulerStrategies.
+	descheduler.metricsCollector.Collect(ctx)
+
+	err := descheduler.runDeschedulerLoop(ctx, nodes)
+	if err != nil {
+		t.Fatalf("Unable to run a descheduling loop: %v", err)
+	}
+	totalEs := descheduler.podEvictor.TotalEvicted()
+	if totalEs != 2 {
+		t.Fatalf("Expected %v evictions in total, got %v instead", 2, totalEs)
+	}
+	t.Logf("Total evictions: %v", totalEs)
 }

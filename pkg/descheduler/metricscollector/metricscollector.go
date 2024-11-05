@@ -92,7 +92,7 @@ func (mc *MetricsCollector) Collect(ctx context.Context) error {
 	}
 
 	for _, node := range nodes.Items {
-		metrics, err := mc.metricsClientset.MetricsV1beta1().NodeMetricses().Get(context.TODO(), node.Name, metav1.GetOptions{})
+		metrics, err := mc.metricsClientset.MetricsV1beta1().NodeMetricses().Get(ctx, node.Name, metav1.GetOptions{})
 		if err != nil {
 			fmt.Printf("Error fetching metrics for node %s: %v\n", node.Name, err)
 			// No entry -> duplicate the previous value -> do nothing as beta*PV + (1-beta)*PV = PV
