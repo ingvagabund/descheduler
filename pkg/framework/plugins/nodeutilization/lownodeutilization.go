@@ -18,7 +18,11 @@ package nodeutilization
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
+	"net"
+	"net/http"
+	"time"
 
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -30,6 +34,9 @@ import (
 	nodeutil "sigs.k8s.io/descheduler/pkg/descheduler/node"
 	podutil "sigs.k8s.io/descheduler/pkg/descheduler/pod"
 	frameworktypes "sigs.k8s.io/descheduler/pkg/framework/types"
+
+	promapi "github.com/prometheus/client_golang/api"
+	"github.com/prometheus/common/config"
 )
 
 const LowNodeUtilizationPluginName = "LowNodeUtilization"
@@ -45,6 +52,8 @@ type LowNodeUtilization struct {
 	overutilizationCriteria  []interface{}
 	resourceNames            []v1.ResourceName
 	usageSnapshot            usageClient
+
+	promClient promapi.Client
 }
 
 var _ frameworktypes.BalancePlugin = &LowNodeUtilization{}
@@ -90,8 +99,35 @@ func NewLowNodeUtilization(args runtime.Object, handle frameworktypes.Handle) (f
 	resourceNames := getResourceNames(lowNodeUtilizationArgsArgs.Thresholds)
 
 	var usageSnapshot usageClient
+	var promClient promapi.Client
 	if lowNodeUtilizationArgsArgs.MetricsUtilization.MetricsServer {
-		usageSnapshot = newActualUsageSnapshot(resourceNames, handle.GetPodsAssignedToNodeFunc(), handle.MetricsCollector())
+		if lowNodeUtilizationArgsArgs.MetricsUtilization.PrometheusURL != "" {
+			roundTripper := &http.Transport{
+				Proxy: http.ProxyFromEnvironment,
+				DialContext: (&net.Dialer{
+					Timeout:   30 * time.Second,
+					KeepAlive: 30 * time.Second,
+				}).DialContext,
+				TLSHandshakeTimeout: 10 * time.Second,
+				TLSClientConfig:     &tls.Config{InsecureSkipVerify: true},
+			}
+
+			pClient, err := promapi.NewClient(promapi.Config{
+				Address:      lowNodeUtilizationArgsArgs.MetricsUtilization.PrometheusURL,
+				RoundTripper: config.NewAuthorizationCredentialsRoundTripper("Bearer", config.NewInlineSecret(lowNodeUtilizationArgsArgs.MetricsUtilization.PrometheusAuthToken), roundTripper),
+			})
+			if err != nil {
+				return nil, fmt.Errorf("unable to create a new prom client: %v", err)
+			}
+			promClient = pClient
+
+			usageSnapshot = newPrometheusUsageSnapshot(handle.GetPodsAssignedToNodeFunc(), promClient)
+			// reset all resource names to just ResourceMetrics
+			// TODO(ingvagabund): validate only ResourceMetrics is set when prometheus metrics are enabled
+			resourceNames = []v1.ResourceName{ResourceMetrics}
+		} else {
+			usageSnapshot = newActualUsageSnapshot(resourceNames, handle.GetPodsAssignedToNodeFunc(), handle.MetricsCollector())
+		}
 	} else {
 		usageSnapshot = newRequestedUsageSnapshot(resourceNames, handle.GetPodsAssignedToNodeFunc())
 	}

@@ -44,10 +44,11 @@ type usageClient interface {
 	pods(node string) []*v1.Pod
 	capture(nodes []*v1.Node) error
 	podUsage(pod *v1.Pod) (map[v1.ResourceName]*resource.Quantity, error)
+	resourceNames() []v1.ResourceName
 }
 
 type requestedUsageClient struct {
-	resourceNames         []v1.ResourceName
+	_resourceNames        []v1.ResourceName
 	getPodsAssignedToNode podutil.GetPodsAssignedToNodeFunc
 
 	_nodes           []*v1.Node
@@ -62,7 +63,7 @@ func newRequestedUsageSnapshot(
 	getPodsAssignedToNode podutil.GetPodsAssignedToNodeFunc,
 ) *requestedUsageClient {
 	return &requestedUsageClient{
-		resourceNames:         resourceNames,
+		_resourceNames:        resourceNames,
 		getPodsAssignedToNode: getPodsAssignedToNode,
 	}
 }
@@ -81,10 +82,14 @@ func (s *requestedUsageClient) pods(node string) []*v1.Pod {
 
 func (s *requestedUsageClient) podUsage(pod *v1.Pod) (map[v1.ResourceName]*resource.Quantity, error) {
 	usage := make(map[v1.ResourceName]*resource.Quantity)
-	for _, resourceName := range s.resourceNames {
+	for _, resourceName := range s._resourceNames {
 		usage[resourceName] = utilptr.To[resource.Quantity](utils.GetResourceRequestQuantity(pod, resourceName).DeepCopy())
 	}
 	return usage, nil
+}
+
+func (client *requestedUsageClient) resourceNames() []v1.ResourceName {
+	return client._resourceNames
 }
 
 func (s *requestedUsageClient) capture(nodes []*v1.Node) error {
@@ -99,7 +104,7 @@ func (s *requestedUsageClient) capture(nodes []*v1.Node) error {
 			continue
 		}
 
-		nodeUsage, err := nodeutil.NodeUtilization(pods, s.resourceNames, func(pod *v1.Pod) (v1.ResourceList, error) {
+		nodeUsage, err := nodeutil.NodeUtilization(pods, s._resourceNames, func(pod *v1.Pod) (v1.ResourceList, error) {
 			req, _ := utils.PodRequestsAndLimits(pod)
 			return req, nil
 		})
@@ -119,7 +124,7 @@ func (s *requestedUsageClient) capture(nodes []*v1.Node) error {
 }
 
 type actualUsageClient struct {
-	resourceNames         []v1.ResourceName
+	_resourceNames        []v1.ResourceName
 	getPodsAssignedToNode podutil.GetPodsAssignedToNodeFunc
 	metricsCollector      *metricscollector.MetricsCollector
 
@@ -136,7 +141,7 @@ func newActualUsageSnapshot(
 	metricsCollector *metricscollector.MetricsCollector,
 ) *actualUsageClient {
 	return &actualUsageClient{
-		resourceNames:         resourceNames,
+		_resourceNames:        resourceNames,
 		getPodsAssignedToNode: getPodsAssignedToNode,
 		metricsCollector:      metricsCollector,
 	}
@@ -164,7 +169,7 @@ func (client *actualUsageClient) podUsage(pod *v1.Pod) (map[v1.ResourceName]*res
 
 	totalUsage := make(map[v1.ResourceName]*resource.Quantity)
 	for _, container := range podMetrics.Containers {
-		for _, resourceName := range client.resourceNames {
+		for _, resourceName := range client._resourceNames {
 			if _, exists := container.Usage[resourceName]; !exists {
 				continue
 			}
@@ -177,6 +182,10 @@ func (client *actualUsageClient) podUsage(pod *v1.Pod) (map[v1.ResourceName]*res
 	}
 
 	return totalUsage, nil
+}
+
+func (client *actualUsageClient) resourceNames() []v1.ResourceName {
+	return client._resourceNames
 }
 
 func (client *actualUsageClient) capture(nodes []*v1.Node) error {
@@ -244,7 +253,12 @@ func (client *prometheusUsageClient) pods(node string) []*v1.Pod {
 }
 
 func (client *prometheusUsageClient) podUsage(pod *v1.Pod) (map[v1.ResourceName]*resource.Quantity, error) {
-	return nil, nil
+	// make sure only a single pod per node is always evicted
+	// TODO(ingvagabund): define a reasonable pod usage for a given metric
+	usage := map[v1.ResourceName]*resource.Quantity{
+		ResourceMetrics: resource.NewQuantity(int64(1000), resource.DecimalSI),
+	}
+	return usage, nil
 }
 
 type fakePromClient struct {
@@ -274,6 +288,10 @@ func (client *fakePromClient) Do(ctx context.Context, request *http.Request) (*h
 	})
 
 	return &http.Response{StatusCode: 200}, jsonData, err
+}
+
+func (client *prometheusUsageClient) resourceNames() []v1.ResourceName {
+	return []v1.ResourceName{ResourceMetrics}
 }
 
 func (client *prometheusUsageClient) capture(nodes []*v1.Node) error {

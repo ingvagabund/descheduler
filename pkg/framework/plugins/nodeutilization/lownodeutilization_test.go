@@ -1371,6 +1371,157 @@ func TestLowNodeUtilizationWithTaints(t *testing.T) {
 	}
 }
 
+func TestLowNodeUtilizationWithPrometheusMetrics(t *testing.T) {
+	n1NodeName := "n1"
+	n2NodeName := "n2"
+	n3NodeName := "n3"
+
+	testCases := []struct {
+		name                         string
+		useDeviationThresholds       bool
+		thresholds, targetThresholds api.ResourceThresholds
+		nodes                        []*v1.Node
+		pods                         []*v1.Pod
+		expectedPodsEvicted          uint
+		evictedPods                  []string
+		evictableNamespaces          *api.Namespaces
+	}{
+		{
+			name: "without priorities stop when cpu capacity is depleted",
+			thresholds: api.ResourceThresholds{
+				v1.ResourceName("MetricResource"): 30,
+			},
+			targetThresholds: api.ResourceThresholds{
+				v1.ResourceName("MetricResource"): 50,
+			},
+			nodes: []*v1.Node{
+				test.BuildTestNode(n1NodeName, 4000, 3000, 9, nil),
+				test.BuildTestNode(n2NodeName, 4000, 3000, 10, nil),
+				test.BuildTestNode(n3NodeName, 4000, 3000, 10, nil),
+			},
+			pods: []*v1.Pod{
+				test.BuildTestPod("p1", 400, 0, n1NodeName, test.SetRSOwnerRef),
+				test.BuildTestPod("p2", 400, 0, n1NodeName, test.SetRSOwnerRef),
+				test.BuildTestPod("p3", 400, 0, n1NodeName, test.SetRSOwnerRef),
+				test.BuildTestPod("p4", 400, 0, n1NodeName, test.SetRSOwnerRef),
+				test.BuildTestPod("p5", 400, 0, n1NodeName, test.SetRSOwnerRef),
+				// These won't be evicted.
+				test.BuildTestPod("p6", 400, 0, n1NodeName, test.SetDSOwnerRef),
+				test.BuildTestPod("p7", 400, 0, n1NodeName, func(pod *v1.Pod) {
+					// A pod with local storage.
+					test.SetNormalOwnerRef(pod)
+					pod.Spec.Volumes = []v1.Volume{
+						{
+							Name: "sample",
+							VolumeSource: v1.VolumeSource{
+								HostPath: &v1.HostPathVolumeSource{Path: "somePath"},
+								EmptyDir: &v1.EmptyDirVolumeSource{
+									SizeLimit: resource.NewQuantity(int64(10), resource.BinarySI),
+								},
+							},
+						},
+					}
+					// A Mirror Pod.
+					pod.Annotations = test.GetMirrorPodAnnotation()
+				}),
+				test.BuildTestPod("p8", 400, 0, n1NodeName, func(pod *v1.Pod) {
+					// A Critical Pod.
+					test.SetNormalOwnerRef(pod)
+					pod.Namespace = "kube-system"
+					priority := utils.SystemCriticalPriority
+					pod.Spec.Priority = &priority
+				}),
+				test.BuildTestPod("p9", 400, 0, n2NodeName, test.SetRSOwnerRef),
+			},
+			expectedPodsEvicted: 4,
+		},
+	}
+
+	for _, tc := range testCases {
+		testFnc := func(metricsEnabled bool, expectedPodsEvicted uint) func(t *testing.T) {
+			return func(t *testing.T) {
+				ctx, cancel := context.WithCancel(context.Background())
+				defer cancel()
+
+				var objs []runtime.Object
+				for _, node := range tc.nodes {
+					objs = append(objs, node)
+				}
+				for _, pod := range tc.pods {
+					objs = append(objs, pod)
+				}
+
+				fakeClient := fake.NewSimpleClientset(objs...)
+
+				podsForEviction := make(map[string]struct{})
+				for _, pod := range tc.evictedPods {
+					podsForEviction[pod] = struct{}{}
+				}
+
+				evictionFailed := false
+				if len(tc.evictedPods) > 0 {
+					fakeClient.Fake.AddReactor("create", "pods", func(action core.Action) (bool, runtime.Object, error) {
+						getAction := action.(core.CreateAction)
+						obj := getAction.GetObject()
+						if eviction, ok := obj.(*policy.Eviction); ok {
+							if _, exists := podsForEviction[eviction.Name]; exists {
+								return true, obj, nil
+							}
+							evictionFailed = true
+							return true, nil, fmt.Errorf("pod %q was unexpectedly evicted", eviction.Name)
+						}
+						return true, obj, nil
+					})
+				}
+
+				handle, podEvictor, err := frameworktesting.InitFrameworkHandle(ctx, fakeClient, nil, defaultevictor.DefaultEvictorArgs{NodeFit: true}, nil)
+				if err != nil {
+					t.Fatalf("Unable to initialize a framework handle: %v", err)
+				}
+
+				plugin, err := NewLowNodeUtilization(&LowNodeUtilizationArgs{
+					Thresholds:             tc.thresholds,
+					TargetThresholds:       tc.targetThresholds,
+					UseDeviationThresholds: tc.useDeviationThresholds,
+					EvictableNamespaces:    tc.evictableNamespaces,
+					MetricsUtilization: MetricsUtilization{
+						MetricsServer:       true,
+						PrometheusURL:       "http://prometheus.example.orgname",
+						PrometheusAuthToken: "XXXXX",
+					},
+				},
+					handle)
+				if err != nil {
+					t.Fatalf("Unable to initialize the plugin: %v", err)
+				}
+
+				pClient := &fakePromClient{
+					result: []model.Sample{
+						sample("instance:node_cpu:rate:sum", n1NodeName, 0.5695757575757561),
+						sample("instance:node_cpu:rate:sum", n2NodeName, 0.4245454545454522),
+						sample("instance:node_cpu:rate:sum", n3NodeName, 0.20381818181818104),
+					},
+				}
+
+				plugin.(*LowNodeUtilization).usageSnapshot = newPrometheusUsageSnapshot(handle.GetPodsAssignedToNodeFunc(), pClient)
+				status := plugin.(frameworktypes.BalancePlugin).Balance(ctx, tc.nodes)
+				if status != nil {
+					t.Fatalf("Balance.err: %v", status.Err)
+				}
+
+				podsEvicted := podEvictor.TotalEvicted()
+				if expectedPodsEvicted != podsEvicted {
+					t.Errorf("Expected %v pods to be evicted but %v got evicted", expectedPodsEvicted, podsEvicted)
+				}
+				if evictionFailed {
+					t.Errorf("Pod evictions failed unexpectedly")
+				}
+			}
+		}
+		t.Run(tc.name, testFnc(false, tc.expectedPodsEvicted))
+	}
+}
+
 func TestLowNodeUtilizationWithMetricsReal(t *testing.T) {
 	return
 	roundTripper := &http.Transport{
@@ -1433,10 +1584,10 @@ func TestLowNodeUtilizationWithMetricsReal(t *testing.T) {
 	// promQuery := "avg_over_time(kube_pod_container_resource_requests[1m])"
 	nodeThresholds := NodeThresholds{
 		lowResourceThreshold: map[v1.ResourceName]*resource.Quantity{
-			v1.ResourceName("MetricResource"): resource.NewQuantity(int64(300), resource.DecimalSI),
+			ResourceMetrics: resource.NewQuantity(int64(300), resource.DecimalSI),
 		},
 		highResourceThreshold: map[v1.ResourceName]*resource.Quantity{
-			v1.ResourceName("MetricResource"): resource.NewQuantity(int64(500), resource.DecimalSI),
+			ResourceMetrics: resource.NewQuantity(int64(500), resource.DecimalSI),
 		},
 	}
 

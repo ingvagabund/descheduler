@@ -35,6 +35,8 @@ import (
 	"sigs.k8s.io/descheduler/pkg/utils"
 )
 
+const ResourceMetrics = v1.ResourceName("MetricResource")
+
 // NodeUsage stores a node's info, pods on it, thresholds and its resource usage
 type NodeUsage struct {
 	node    *v1.Node
@@ -93,6 +95,8 @@ func getNodeThresholds(
 		if len(node.Status.Allocatable) > 0 {
 			nodeCapacity = node.Status.Allocatable
 		}
+		// Make ResourceMetrics 100% => 1000 points
+		nodeCapacity[ResourceMetrics] = *resource.NewQuantity(int64(1000), resource.DecimalSI)
 
 		nodeThresholdsMap[node.Name] = NodeThresholds{
 			lowResourceThreshold:  map[v1.ResourceName]*resource.Quantity{},
@@ -222,10 +226,9 @@ func evictPodsFromSourceNodes(
 	usageSnapshot usageClient,
 ) {
 	// upper bound on total number of pods/cpu/memory and optional extended resources to be moved
-	totalAvailableUsage := map[v1.ResourceName]*resource.Quantity{
-		v1.ResourcePods:   {},
-		v1.ResourceCPU:    {},
-		v1.ResourceMemory: {},
+	totalAvailableUsage := map[v1.ResourceName]*resource.Quantity{}
+	for _, resourceName := range usageSnapshot.resourceNames() {
+		totalAvailableUsage[resourceName] = &resource.Quantity{}
 	}
 
 	taintsOfDestinationNodes := make(map[string][]v1.Taint, len(destinationNodes))
@@ -246,10 +249,15 @@ func evictPodsFromSourceNodes(
 	}
 
 	// log message in one line
-	keysAndValues := []interface{}{
-		"CPU", totalAvailableUsage[v1.ResourceCPU].MilliValue(),
-		"Mem", totalAvailableUsage[v1.ResourceMemory].Value(),
-		"Pods", totalAvailableUsage[v1.ResourcePods].Value(),
+	keysAndValues := []interface{}{}
+	if quantity, exists := totalAvailableUsage[v1.ResourceCPU]; exists {
+		keysAndValues = append(keysAndValues, "CPU", quantity.MilliValue())
+	}
+	if quantity, exists := totalAvailableUsage[v1.ResourceMemory]; exists {
+		keysAndValues = append(keysAndValues, "Mem", quantity.Value())
+	}
+	if quantity, exists := totalAvailableUsage[v1.ResourcePods]; exists {
+		keysAndValues = append(keysAndValues, "Pods", quantity.Value())
 	}
 	for name := range totalAvailableUsage {
 		if !node.IsBasicResource(name) {
@@ -339,10 +347,17 @@ func evictPods(
 
 				keysAndValues := []interface{}{
 					"node", nodeInfo.node.Name,
-					"CPU", nodeInfo.usage[v1.ResourceCPU].MilliValue(),
-					"Mem", nodeInfo.usage[v1.ResourceMemory].Value(),
-					"Pods", nodeInfo.usage[v1.ResourcePods].Value(),
 				}
+				if quantity, exists := nodeInfo.usage[v1.ResourceCPU]; exists {
+					keysAndValues = append(keysAndValues, "CPU", quantity.MilliValue())
+				}
+				if quantity, exists := nodeInfo.usage[v1.ResourceMemory]; exists {
+					keysAndValues = append(keysAndValues, "Mem", quantity.Value())
+				}
+				if quantity, exists := nodeInfo.usage[v1.ResourcePods]; exists {
+					keysAndValues = append(keysAndValues, "Pods", quantity.Value())
+				}
+
 				for name := range totalAvailableUsage {
 					if !nodeutil.IsBasicResource(name) {
 						keysAndValues = append(keysAndValues, string(name), totalAvailableUsage[name].Value())
