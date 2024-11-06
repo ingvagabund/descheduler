@@ -18,8 +18,15 @@ package nodeutilization
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"net/http"
+	"net/url"
+	"time"
 
+	promapi "github.com/prometheus/client_golang/api"
+	promv1 "github.com/prometheus/client_golang/api/prometheus/v1"
+	"github.com/prometheus/common/model"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -193,6 +200,117 @@ func (client *actualUsageClient) capture(nodes []*v1.Node) error {
 		// store the snapshot of pods from the same (or the closest) node utilization computation
 		client._pods[node.Name] = pods
 		client._nodeUtilization[node.Name] = nodeUsage
+		capturedNodes = append(capturedNodes, node)
+	}
+
+	client._nodes = capturedNodes
+
+	return nil
+}
+
+type prometheusUsageClient struct {
+	getPodsAssignedToNode podutil.GetPodsAssignedToNodeFunc
+	promClient            promapi.Client
+	promQuery             string
+
+	_nodes           []*v1.Node
+	_pods            map[string][]*v1.Pod
+	_nodeUtilization map[string]map[v1.ResourceName]*resource.Quantity
+}
+
+var _ usageClient = &actualUsageClient{}
+
+func newPrometheusUsageSnapshot(
+	getPodsAssignedToNode podutil.GetPodsAssignedToNodeFunc,
+	promClient promapi.Client,
+) *prometheusUsageClient {
+	return &prometheusUsageClient{
+		getPodsAssignedToNode: getPodsAssignedToNode,
+		promClient:            promClient,
+		promQuery:             "instance:node_cpu:rate:sum",
+	}
+}
+
+func (client *prometheusUsageClient) nodeUtilization(node string) map[v1.ResourceName]*resource.Quantity {
+	return client._nodeUtilization[node]
+}
+
+func (client *prometheusUsageClient) nodes() []*v1.Node {
+	return client._nodes
+}
+
+func (client *prometheusUsageClient) pods(node string) []*v1.Pod {
+	return client._pods[node]
+}
+
+func (client *prometheusUsageClient) podUsage(pod *v1.Pod) (map[v1.ResourceName]*resource.Quantity, error) {
+	return nil, nil
+}
+
+type fakePromClient struct {
+	result interface{}
+}
+
+type fakePayload struct {
+	Status string      `json:"status"`
+	Data   queryResult `json:"data"`
+}
+
+type queryResult struct {
+	Type   model.ValueType `json:"resultType"`
+	Result interface{}     `json:"result"`
+}
+
+func (client *fakePromClient) URL(ep string, args map[string]string) *url.URL {
+	return &url.URL{}
+}
+func (client *fakePromClient) Do(ctx context.Context, request *http.Request) (*http.Response, []byte, error) {
+	jsonData, err := json.Marshal(fakePayload{
+		Status: "success",
+		Data: queryResult{
+			Type:   model.ValVector,
+			Result: client.result,
+		},
+	})
+
+	return &http.Response{StatusCode: 200}, jsonData, err
+}
+
+func (client *prometheusUsageClient) capture(nodes []*v1.Node) error {
+	client._nodeUtilization = make(map[string]map[v1.ResourceName]*resource.Quantity)
+	client._pods = make(map[string][]*v1.Pod)
+	capturedNodes := []*v1.Node{}
+
+	results, warnings, err := promv1.NewAPI(client.promClient).Query(context.TODO(), client.promQuery, time.Now())
+	if err != nil {
+		return fmt.Errorf("unable to capture prometheus metrics: %v", err)
+	}
+	if len(warnings) > 0 {
+		klog.Infof("prometheus metrics warnings: %v", warnings)
+	}
+
+	nodeUsages := make(map[string]map[v1.ResourceName]*resource.Quantity)
+	for _, sample := range results.(model.Vector) {
+		// fmt.Printf("sample: %#v\n", sample)
+		nodeName := string(sample.Metric["instance"])
+		nodeUsages[nodeName] = map[v1.ResourceName]*resource.Quantity{
+			v1.ResourceName("MetricResource"): resource.NewQuantity(int64(sample.Value*1000), resource.DecimalSI),
+		}
+	}
+
+	for _, node := range nodes {
+		if _, exists := nodeUsages[node.Name]; !exists {
+			return fmt.Errorf("unable to find metric entry for %v", node.Name)
+		}
+		pods, err := podutil.ListPodsOnANode(node.Name, client.getPodsAssignedToNode, nil)
+		if err != nil {
+			klog.V(2).InfoS("Node will not be processed, error accessing its pods", "node", klog.KObj(node), "err", err)
+			continue
+		}
+
+		// store the snapshot of pods from the same (or the closest) node utilization computation
+		client._pods[node.Name] = pods
+		client._nodeUtilization[node.Name] = nodeUsages[node.Name]
 		capturedNodes = append(capturedNodes, node)
 	}
 
