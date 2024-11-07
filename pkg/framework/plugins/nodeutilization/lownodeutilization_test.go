@@ -1371,6 +1371,32 @@ func TestLowNodeUtilizationWithTaints(t *testing.T) {
 	}
 }
 
+func withLocalStorage(pod *v1.Pod) {
+	// A pod with local storage.
+	test.SetNormalOwnerRef(pod)
+	pod.Spec.Volumes = []v1.Volume{
+		{
+			Name: "sample",
+			VolumeSource: v1.VolumeSource{
+				HostPath: &v1.HostPathVolumeSource{Path: "somePath"},
+				EmptyDir: &v1.EmptyDirVolumeSource{
+					SizeLimit: resource.NewQuantity(int64(10), resource.BinarySI),
+				},
+			},
+		},
+	}
+	// A Mirror Pod.
+	pod.Annotations = test.GetMirrorPodAnnotation()
+}
+
+func withCriticalPod(pod *v1.Pod) {
+	// A Critical Pod.
+	test.SetNormalOwnerRef(pod)
+	pod.Namespace = "kube-system"
+	priority := utils.SystemCriticalPriority
+	pod.Spec.Priority = &priority
+}
+
 func TestLowNodeUtilizationWithPrometheusMetrics(t *testing.T) {
 	n1NodeName := "n1"
 	n2NodeName := "n2"
@@ -1380,6 +1406,8 @@ func TestLowNodeUtilizationWithPrometheusMetrics(t *testing.T) {
 		name                         string
 		useDeviationThresholds       bool
 		thresholds, targetThresholds api.ResourceThresholds
+		query                        string
+		samples                      []model.Sample
 		nodes                        []*v1.Node
 		pods                         []*v1.Pod
 		expectedPodsEvicted          uint
@@ -1387,12 +1415,18 @@ func TestLowNodeUtilizationWithPrometheusMetrics(t *testing.T) {
 		evictableNamespaces          *api.Namespaces
 	}{
 		{
-			name: "without priorities stop when cpu capacity is depleted",
+			name: "with instance:node_cpu:rate:sum query",
 			thresholds: api.ResourceThresholds{
 				v1.ResourceName("MetricResource"): 30,
 			},
 			targetThresholds: api.ResourceThresholds{
 				v1.ResourceName("MetricResource"): 50,
+			},
+			query: "instance:node_cpu:rate:sum",
+			samples: []model.Sample{
+				sample("instance:node_cpu:rate:sum", n1NodeName, 0.5695757575757561),
+				sample("instance:node_cpu:rate:sum", n2NodeName, 0.4245454545454522),
+				sample("instance:node_cpu:rate:sum", n3NodeName, 0.20381818181818104),
 			},
 			nodes: []*v1.Node{
 				test.BuildTestNode(n1NodeName, 4000, 3000, 9, nil),
@@ -1407,30 +1441,8 @@ func TestLowNodeUtilizationWithPrometheusMetrics(t *testing.T) {
 				test.BuildTestPod("p5", 400, 0, n1NodeName, test.SetRSOwnerRef),
 				// These won't be evicted.
 				test.BuildTestPod("p6", 400, 0, n1NodeName, test.SetDSOwnerRef),
-				test.BuildTestPod("p7", 400, 0, n1NodeName, func(pod *v1.Pod) {
-					// A pod with local storage.
-					test.SetNormalOwnerRef(pod)
-					pod.Spec.Volumes = []v1.Volume{
-						{
-							Name: "sample",
-							VolumeSource: v1.VolumeSource{
-								HostPath: &v1.HostPathVolumeSource{Path: "somePath"},
-								EmptyDir: &v1.EmptyDirVolumeSource{
-									SizeLimit: resource.NewQuantity(int64(10), resource.BinarySI),
-								},
-							},
-						},
-					}
-					// A Mirror Pod.
-					pod.Annotations = test.GetMirrorPodAnnotation()
-				}),
-				test.BuildTestPod("p8", 400, 0, n1NodeName, func(pod *v1.Pod) {
-					// A Critical Pod.
-					test.SetNormalOwnerRef(pod)
-					pod.Namespace = "kube-system"
-					priority := utils.SystemCriticalPriority
-					pod.Spec.Priority = &priority
-				}),
+				test.BuildTestPod("p7", 400, 0, n1NodeName, withLocalStorage),
+				test.BuildTestPod("p8", 400, 0, n1NodeName, withCriticalPod),
 				test.BuildTestPod("p9", 400, 0, n2NodeName, test.SetRSOwnerRef),
 			},
 			expectedPodsEvicted: 4,
@@ -1496,14 +1508,10 @@ func TestLowNodeUtilizationWithPrometheusMetrics(t *testing.T) {
 				}
 
 				pClient := &fakePromClient{
-					result: []model.Sample{
-						sample("instance:node_cpu:rate:sum", n1NodeName, 0.5695757575757561),
-						sample("instance:node_cpu:rate:sum", n2NodeName, 0.4245454545454522),
-						sample("instance:node_cpu:rate:sum", n3NodeName, 0.20381818181818104),
-					},
+					result: tc.samples,
 				}
 
-				plugin.(*LowNodeUtilization).usageSnapshot = newPrometheusUsageSnapshot(handle.GetPodsAssignedToNodeFunc(), pClient)
+				plugin.(*LowNodeUtilization).usageSnapshot = newPrometheusUsageSnapshot(handle.GetPodsAssignedToNodeFunc(), pClient, tc.query)
 				status := plugin.(frameworktypes.BalancePlugin).Balance(ctx, tc.nodes)
 				if status != nil {
 					t.Fatalf("Balance.err: %v", status.Err)
@@ -1523,7 +1531,6 @@ func TestLowNodeUtilizationWithPrometheusMetrics(t *testing.T) {
 }
 
 func TestLowNodeUtilizationWithMetricsReal(t *testing.T) {
-	return
 	roundTripper := &http.Transport{
 		Proxy: http.ProxyFromEnvironment,
 		DialContext: (&net.Dialer{
@@ -1534,9 +1541,9 @@ func TestLowNodeUtilizationWithMetricsReal(t *testing.T) {
 		TLSClientConfig:     &tls.Config{InsecureSkipVerify: true},
 	}
 
-	AuthToken := "XXXX"
+	AuthToken := "XXXXX"
 	promClient, err := promapi.NewClient(promapi.Config{
-		Address:      "https://prometheus-k8s-openshift-monitoring.apps.jchaloup-20241106.group-b.devcluster.openshift.com",
+		Address:      "https://prometheus-k8s-openshift-monitoring.apps.bleeding.cnv.engineering.redhat.com",
 		RoundTripper: config.NewAuthorizationCredentialsRoundTripper("Bearer", config.NewInlineSecret(AuthToken), roundTripper),
 	})
 	if err != nil {
@@ -1567,7 +1574,7 @@ func TestLowNodeUtilizationWithMetricsReal(t *testing.T) {
 	sharedInformerFactory.Start(ctx.Done())
 	sharedInformerFactory.WaitForCacheSync(ctx.Done())
 
-	prometheusUsageClient := newPrometheusUsageSnapshot(podsAssignedToNode, promClient)
+	prometheusUsageClient := newPrometheusUsageSnapshot(podsAssignedToNode, promClient, "rate(node_pressure_cpu_waiting_seconds_total[1m])")
 	err = prometheusUsageClient.capture(nodes)
 	if err != nil {
 		t.Fatalf("unable to capture prometheus metrics: %v", err)

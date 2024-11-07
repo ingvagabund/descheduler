@@ -28,7 +28,7 @@ type LowNodeUtilizationArgs struct {
 	Thresholds             api.ResourceThresholds `json:"thresholds"`
 	TargetThresholds       api.ResourceThresholds `json:"targetThresholds"`
 	NumberOfNodes          int                    `json:"numberOfNodes,omitempty"`
-	MetricsUtilization     MetricsUtilization     `json:metricsUtilization,omitempty`
+	MetricsUtilization     MetricsUtilization     `json:"metricsUtilization,omitempty"`
 
 	// Naming this one differently since namespaces are still
 	// considered while considering resources used by pods
@@ -61,4 +61,5 @@ type MetricsUtilization struct {
 	PrometheusURL string `json:"prometheusURL,omitempty"`
 	// TODO(ingvagabund): Get the token from a secret
 	PrometheusAuthToken string `json:"prometheusAuthToken,omitempty"`
+	PromQuery           string `json:"promQuery,omitempty"`
 }

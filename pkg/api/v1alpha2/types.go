@@ -74,5 +74,5 @@ type PluginSet struct {
 type MetricsCollector struct {
 	// Enabled metrics collection from kubernetes metrics.
 	// Later, the collection can be extended to other providers.
-	Enabled bool
+	Enabled bool `json:"enabled"`
 }

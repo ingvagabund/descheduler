@@ -121,7 +121,7 @@ func NewLowNodeUtilization(args runtime.Object, handle frameworktypes.Handle) (f
 			}
 			promClient = pClient
 
-			usageSnapshot = newPrometheusUsageSnapshot(handle.GetPodsAssignedToNodeFunc(), promClient)
+			usageSnapshot = newPrometheusUsageSnapshot(handle.GetPodsAssignedToNodeFunc(), promClient, lowNodeUtilizationArgsArgs.MetricsUtilization.PromQuery)
 			// reset all resource names to just ResourceMetrics
 			// TODO(ingvagabund): validate only ResourceMetrics is set when prometheus metrics are enabled
 			resourceNames = []v1.ResourceName{ResourceMetrics}

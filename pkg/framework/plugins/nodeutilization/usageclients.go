@@ -38,6 +38,28 @@ import (
 	"sigs.k8s.io/descheduler/pkg/utils"
 )
 
+type UsageClientType int
+
+const (
+	requestedUsageClientType UsageClientType = iota
+	actualUsageClientType
+	prometheusUsageClientType
+)
+
+type notSupportedError struct {
+	usageClientType UsageClientType
+}
+
+func (e notSupportedError) Error() string {
+	return "maximum number of evicted pods per node reached"
+}
+
+func newNotSupportedError(usageClientType UsageClientType) *notSupportedError {
+	return &notSupportedError{
+		usageClientType: usageClientType,
+	}
+}
+
 type usageClient interface {
 	nodeUtilization(node string) map[v1.ResourceName]*resource.Quantity
 	nodes() []*v1.Node
@@ -232,11 +254,12 @@ var _ usageClient = &actualUsageClient{}
 func newPrometheusUsageSnapshot(
 	getPodsAssignedToNode podutil.GetPodsAssignedToNodeFunc,
 	promClient promapi.Client,
+	promQuery string,
 ) *prometheusUsageClient {
 	return &prometheusUsageClient{
 		getPodsAssignedToNode: getPodsAssignedToNode,
 		promClient:            promClient,
-		promQuery:             "instance:node_cpu:rate:sum",
+		promQuery:             promQuery,
 	}
 }
 
@@ -253,12 +276,7 @@ func (client *prometheusUsageClient) pods(node string) []*v1.Pod {
 }
 
 func (client *prometheusUsageClient) podUsage(pod *v1.Pod) (map[v1.ResourceName]*resource.Quantity, error) {
-	// make sure only a single pod per node is always evicted
-	// TODO(ingvagabund): define a reasonable pod usage for a given metric
-	usage := map[v1.ResourceName]*resource.Quantity{
-		ResourceMetrics: resource.NewQuantity(int64(1000), resource.DecimalSI),
-	}
-	return usage, nil
+	return nil, newNotSupportedError(prometheusUsageClientType)
 }
 
 type fakePromClient struct {
@@ -306,7 +324,7 @@ func (client *prometheusUsageClient) capture(nodes []*v1.Node) error {
 	if len(warnings) > 0 {
 		klog.Infof("prometheus metrics warnings: %v", warnings)
 	}
-
+	// fmt.Printf("results: %#v\n", results)
 	nodeUsages := make(map[string]map[v1.ResourceName]*resource.Quantity)
 	for _, sample := range results.(model.Vector) {
 		// fmt.Printf("sample: %#v\n", sample)

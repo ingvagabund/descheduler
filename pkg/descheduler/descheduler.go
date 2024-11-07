@@ -425,11 +425,14 @@ func RunDeschedulerStrategies(ctx context.Context, rs *options.DeschedulerServer
 	sharedInformerFactory.Start(ctx.Done())
 	sharedInformerFactory.WaitForCacheSync(ctx.Done())
 
-	go func() {
-		klog.V(2).Infof("Starting metrics collector")
-		descheduler.metricsCollector.Run(ctx)
-		klog.V(2).Infof("Stopped metrics collector")
-	}()
+	fmt.Printf("deschedulerPolicy.MetricsCollector.Enabled: %v\n", deschedulerPolicy.MetricsCollector.Enabled)
+	if deschedulerPolicy.MetricsCollector.Enabled {
+		go func() {
+			klog.V(2).Infof("Starting metrics collector")
+			descheduler.metricsCollector.Run(ctx)
+			klog.V(2).Infof("Stopped metrics collector")
+		}()
+	}
 
 	wait.NonSlidingUntil(func() {
 		// A next context is created here intentionally to avoid nesting the spans via context.

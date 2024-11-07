@@ -25,6 +25,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 
+	"github.com/prometheus/common/model"
 	"k8s.io/client-go/informers"
 	fakeclientset "k8s.io/client-go/kubernetes/fake"
 	"k8s.io/metrics/pkg/apis/metrics/v1beta1"
@@ -32,7 +33,6 @@ import (
 	"sigs.k8s.io/descheduler/pkg/descheduler/metricscollector"
 	podutil "sigs.k8s.io/descheduler/pkg/descheduler/pod"
 	"sigs.k8s.io/descheduler/test"
-	"github.com/prometheus/common/model"
 )
 
 var gvr = schema.GroupVersionResource{Group: "metrics.k8s.io", Version: "v1beta1", Resource: "nodemetricses"}
@@ -179,7 +179,7 @@ func TestPrometheusUsageClient(t *testing.T) {
 	sharedInformerFactory.Start(ctx.Done())
 	sharedInformerFactory.WaitForCacheSync(ctx.Done())
 
-	prometheusUsageClient := newPrometheusUsageSnapshot(podsAssignedToNode, pClient)
+	prometheusUsageClient := newPrometheusUsageSnapshot(podsAssignedToNode, pClient, "instance:node_cpu:rate:sum")
 	err = prometheusUsageClient.capture(nodes)
 	if err != nil {
 		t.Fatalf("unable to capture prometheus metrics: %v", err)
