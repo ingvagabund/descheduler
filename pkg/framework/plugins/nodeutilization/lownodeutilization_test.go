@@ -1612,6 +1612,43 @@ func TestLowNodeUtilizationWithPrometheusMetrics(t *testing.T) {
 			},
 			expectedPodsEvicted: 2,
 		},
+		{
+			name: "with instance:node_cpu:rate:sum query and deviation thresholds",
+			args: &LowNodeUtilizationArgs{
+				UseDeviationThresholds: true,
+				Thresholds:             api.ResourceThresholds{MetricResource: 10},
+				TargetThresholds:       api.ResourceThresholds{MetricResource: 10},
+				MetricsUtilization: &MetricsUtilization{
+					Source: api.PrometheusMetrics,
+					Prometheus: &Prometheus{
+						Query: "instance:node_cpu:rate:sum",
+					},
+				},
+			},
+			samples: model.Vector{
+				sample("instance:node_cpu:rate:sum", n1NodeName, 1),
+				sample("instance:node_cpu:rate:sum", n2NodeName, 0.5),
+				sample("instance:node_cpu:rate:sum", n3NodeName, 0),
+			},
+			nodes: []*v1.Node{
+				test.BuildTestNode(n1NodeName, 4000, 3000, 9, nil),
+				test.BuildTestNode(n2NodeName, 4000, 3000, 10, nil),
+				test.BuildTestNode(n3NodeName, 4000, 3000, 10, nil),
+			},
+			pods: []*v1.Pod{
+				test.BuildTestPod("p1", 400, 0, n1NodeName, test.SetRSOwnerRef),
+				test.BuildTestPod("p2", 400, 0, n1NodeName, test.SetRSOwnerRef),
+				test.BuildTestPod("p3", 400, 0, n1NodeName, test.SetRSOwnerRef),
+				test.BuildTestPod("p4", 400, 0, n1NodeName, test.SetRSOwnerRef),
+				test.BuildTestPod("p5", 400, 0, n1NodeName, test.SetRSOwnerRef),
+				// These won't be evicted.
+				test.BuildTestPod("p6", 400, 0, n1NodeName, test.SetDSOwnerRef),
+				test.BuildTestPod("p7", 400, 0, n1NodeName, withLocalStorage),
+				test.BuildTestPod("p8", 400, 0, n1NodeName, withCriticalPod),
+				test.BuildTestPod("p9", 400, 0, n2NodeName, test.SetRSOwnerRef),
+			},
+			expectedPodsEvicted: 1,
+		},
 	}
 
 	for _, tc := range testCases {

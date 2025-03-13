@@ -28,6 +28,7 @@ import (
 	nodeutil "sigs.k8s.io/descheduler/pkg/descheduler/node"
 
 	podutil "sigs.k8s.io/descheduler/pkg/descheduler/pod"
+	"sigs.k8s.io/descheduler/pkg/framework/plugins/nodeutilization/normalizer"
 	frameworktypes "sigs.k8s.io/descheduler/pkg/framework/types"
 )
 
@@ -102,11 +103,18 @@ func (h *HighNodeUtilization) Balance(ctx context.Context, nodes []*v1.Node) *fr
 	}
 
 	nodesMap, nodesUsageMap, podListMap := getNodeUsageSnapshot(nodes, h.usageClient)
-	nodeThresholdsMap := getStaticNodeThresholds(nodes, h.args.Thresholds, h.targetThresholds)
-	nodesUsageAsNodeThresholdsMap := nodeUsageToResourceThresholds(nodesUsageMap, nodesMap)
+	capacities := referencedResourceListForNodesCapacity(nodes)
+
+	usage, thresholds := assessNodesUsagesAndStaticThresholds(
+		nodesUsageMap,
+		capacities,
+		h.args.Thresholds,
+		h.targetThresholds,
+	)
+
 	nodeGroups := classifyNodeUsage(
-		nodesUsageAsNodeThresholdsMap,
-		nodeThresholdsMap,
+		usage,
+		thresholds,
 		[]classifierFnc{
 			// underutilized nodes
 			func(nodeName string, usage, threshold api.ResourceThresholds) bool {
@@ -128,7 +136,12 @@ func (h *HighNodeUtilization) Balance(ctx context.Context, nodes []*v1.Node) *fr
 	category := []string{"underutilized", "overutilized"}
 	for i := range nodeGroups {
 		for nodeName := range nodeGroups[i] {
-			klog.InfoS("Node is "+category[i], "node", klog.KObj(nodesMap[nodeName]), "usage", nodesUsageMap[nodeName], "usagePercentage", resourceUsagePercentages(nodesUsageMap[nodeName], nodesMap[nodeName], true))
+			klog.InfoS(
+				fmt.Sprintf("Node is %s", category[i]),
+				"node", klog.KObj(nodesMap[nodeName]),
+				"usage", nodesUsageMap[nodeName],
+				"usagePercentage", normalizer.Round(usage[nodeName]),
+			)
 			nodeInfos[i] = append(nodeInfos[i], NodeInfo{
 				NodeUsage: NodeUsage{
 					node:    nodesMap[nodeName],
@@ -136,8 +149,8 @@ func (h *HighNodeUtilization) Balance(ctx context.Context, nodes []*v1.Node) *fr
 					allPods: podListMap[nodeName],
 				},
 				thresholds: NodeThresholds{
-					lowResourceThreshold:  resourceThresholdsToNodeUsage(nodeThresholdsMap[nodeName][0], nodesMap[nodeName]),
-					highResourceThreshold: resourceThresholdsToNodeUsage(nodeThresholdsMap[nodeName][1], nodesMap[nodeName]),
+					lowResourceThreshold:  resourceThresholdsToNodeUsage(thresholds[nodeName][0], capacities[nodeName]),
+					highResourceThreshold: resourceThresholdsToNodeUsage(thresholds[nodeName][1], capacities[nodeName]),
 				},
 			})
 		}
