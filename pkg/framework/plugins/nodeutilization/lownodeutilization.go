@@ -56,6 +56,9 @@ func NewLowNodeUtilization(args runtime.Object, handle frameworktypes.Handle) (f
 		return nil, fmt.Errorf("want args to be of type LowNodeUtilizationArgs, got %T", args)
 	}
 
+	resourceNames := getResourceNames(lowNodeUtilizationArgsArgs.Thresholds)
+	extendedResourceNames := resourceNames
+
 	metricsUtilization := lowNodeUtilizationArgsArgs.MetricsUtilization
 	if metricsUtilization != nil && metricsUtilization.Source == api.PrometheusMetrics {
 		if metricsUtilization.Prometheus != nil && metricsUtilization.Prometheus.Query != "" {
@@ -70,6 +73,8 @@ func NewLowNodeUtilization(args runtime.Object, handle frameworktypes.Handle) (f
 		} else {
 			return nil, fmt.Errorf("prometheus query is missing")
 		}
+	} else {
+		extendedResourceNames = uniquifyResourceNames(append(resourceNames, v1.ResourceCPU, v1.ResourceMemory, v1.ResourcePods))
 	}
 
 	underutilizationCriteria := []interface{}{
@@ -100,9 +105,6 @@ func NewLowNodeUtilization(args runtime.Object, handle frameworktypes.Handle) (f
 	if err != nil {
 		return nil, fmt.Errorf("error initializing pod filter function: %v", err)
 	}
-
-	resourceNames := getResourceNames(lowNodeUtilizationArgsArgs.Thresholds)
-	extendedResourceNames := uniquifyResourceNames(append(resourceNames, v1.ResourceCPU, v1.ResourceMemory, v1.ResourcePods))
 
 	var usageClient usageClient
 	// MetricsServer is deprecated, removed once dropped
