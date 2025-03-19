@@ -1023,6 +1023,77 @@ func TestLowNodeUtilization(t *testing.T) {
 			evictedPods:                    []string{},
 		},
 		{
+			name: "deviation thresholds and overevicting memory",
+			thresholds: api.ResourceThresholds{
+				v1.ResourceCPU:  5,
+				v1.ResourcePods: 5,
+				// v1.ResourceMemory: 5,
+			},
+			targetThresholds: api.ResourceThresholds{
+				v1.ResourceCPU:  5,
+				v1.ResourcePods: 5,
+				// v1.ResourceMemory: 5,
+			},
+			useDeviationThresholds: true,
+			nodes: []*v1.Node{
+				test.BuildTestNode(n1NodeName, 4000, 3000, 10, nil),
+				test.BuildTestNode(n2NodeName, 4000, 3000, 10, nil),
+				test.BuildTestNode(n3NodeName, 4000, 3000, 10, test.SetNodeUnschedulable),
+			},
+			// totalcpuusage = 3600m, avgcpuusage = 3600/12000 = 0.3 => 30%
+			// totalpodsusage = 9, avgpodsusage = 9/30 = 0.3 => 30%
+			// n1 and n2 are fully memory utilized
+			pods: []*v1.Pod{
+				test.BuildTestPod("p1", 400, 375, n1NodeName, test.SetRSOwnerRef),
+				test.BuildTestPod("p2", 400, 375, n1NodeName, test.SetRSOwnerRef),
+				test.BuildTestPod("p3", 400, 375, n1NodeName, test.SetRSOwnerRef),
+				test.BuildTestPod("p4", 400, 375, n1NodeName, test.SetRSOwnerRef),
+				test.BuildTestPod("p5", 400, 375, n1NodeName, test.SetRSOwnerRef),
+				// These won't be evicted.
+				test.BuildTestPod("p6", 400, 375, n1NodeName, test.SetDSOwnerRef),
+				test.BuildTestPod("p7", 400, 375, n1NodeName, func(pod *v1.Pod) {
+					// A pod with local storage.
+					test.SetNormalOwnerRef(pod)
+					pod.Spec.Volumes = []v1.Volume{
+						{
+							Name: "sample",
+							VolumeSource: v1.VolumeSource{
+								HostPath: &v1.HostPathVolumeSource{Path: "somePath"},
+								EmptyDir: &v1.EmptyDirVolumeSource{
+									SizeLimit: resource.NewQuantity(int64(10), resource.BinarySI),
+								},
+							},
+						},
+					}
+					// A Mirror Pod.
+					pod.Annotations = test.GetMirrorPodAnnotation()
+				}),
+				test.BuildTestPod("p8", 400, 375, n1NodeName, func(pod *v1.Pod) {
+					// A Critical Pod.
+					test.SetNormalOwnerRef(pod)
+					pod.Namespace = "kube-system"
+					priority := utils.SystemCriticalPriority
+					pod.Spec.Priority = &priority
+				}),
+				test.BuildTestPod("p9", 400, 3000, n2NodeName, test.SetRSOwnerRef),
+			},
+			nodemetricses: []*v1beta1.NodeMetrics{
+				test.BuildNodeMetrics(n1NodeName, 3201, 0),
+				test.BuildNodeMetrics(n2NodeName, 401, 0),
+				test.BuildNodeMetrics(n3NodeName, 11, 0),
+			},
+			podmetricses: []*v1beta1.PodMetrics{
+				test.BuildPodMetrics("p1", 401, 0),
+				test.BuildPodMetrics("p2", 401, 0),
+				test.BuildPodMetrics("p3", 401, 0),
+				test.BuildPodMetrics("p4", 401, 0),
+				test.BuildPodMetrics("p5", 401, 0),
+			},
+			expectedPodsEvicted:            0,
+			expectedPodsWithMetricsEvicted: 2,
+			evictedPods:                    []string{},
+		},
+		{
 			name: "without priorities different evictions for requested and actual resources",
 			thresholds: api.ResourceThresholds{
 				v1.ResourceCPU:  30,

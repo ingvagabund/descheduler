@@ -38,13 +38,13 @@ const LowNodeUtilizationPluginName = "LowNodeUtilization"
 // to calculate nodes' utilization and not the actual resource usage.
 
 type LowNodeUtilization struct {
-	handle                   frameworktypes.Handle
-	args                     *LowNodeUtilizationArgs
-	podFilter                func(pod *v1.Pod) bool
-	underutilizationCriteria []interface{}
-	overutilizationCriteria  []interface{}
-	resourceNames            []v1.ResourceName
-	usageClient              usageClient
+	handle                               frameworktypes.Handle
+	args                                 *LowNodeUtilizationArgs
+	podFilter                            func(pod *v1.Pod) bool
+	underutilizationCriteria             []interface{}
+	overutilizationCriteria              []interface{}
+	resourceNames, extendedResourceNames []v1.ResourceName
+	usageClient                          usageClient
 }
 
 var _ frameworktypes.BalancePlugin = &LowNodeUtilization{}
@@ -70,8 +70,6 @@ func NewLowNodeUtilization(args runtime.Object, handle frameworktypes.Handle) (f
 		} else {
 			return nil, fmt.Errorf("prometheus query is missing")
 		}
-	} else {
-		setDefaultForLNUThresholds(lowNodeUtilizationArgsArgs.Thresholds, lowNodeUtilizationArgsArgs.TargetThresholds, lowNodeUtilizationArgsArgs.UseDeviationThresholds)
 	}
 
 	underutilizationCriteria := []interface{}{
@@ -104,6 +102,7 @@ func NewLowNodeUtilization(args runtime.Object, handle frameworktypes.Handle) (f
 	}
 
 	resourceNames := getResourceNames(lowNodeUtilizationArgsArgs.Thresholds)
+	extendedResourceNames := uniquifyResourceNames(append(resourceNames, v1.ResourceCPU, v1.ResourceMemory, v1.ResourcePods))
 
 	var usageClient usageClient
 	// MetricsServer is deprecated, removed once dropped
@@ -113,7 +112,7 @@ func NewLowNodeUtilization(args runtime.Object, handle frameworktypes.Handle) (f
 			if handle.MetricsCollector() == nil {
 				return nil, fmt.Errorf("metrics client not initialized")
 			}
-			usageClient = newActualUsageClient(resourceNames, handle.GetPodsAssignedToNodeFunc(), handle.MetricsCollector())
+			usageClient = newActualUsageClient(extendedResourceNames, handle.GetPodsAssignedToNodeFunc(), handle.MetricsCollector())
 		case metricsUtilization.Source == api.PrometheusMetrics:
 			if handle.PrometheusClient() == nil {
 				return nil, fmt.Errorf("prometheus client not initialized")
@@ -125,7 +124,7 @@ func NewLowNodeUtilization(args runtime.Object, handle frameworktypes.Handle) (f
 			return nil, fmt.Errorf("metrics source is empty")
 		}
 	} else {
-		usageClient = newRequestedUsageClient(resourceNames, handle.GetPodsAssignedToNodeFunc())
+		usageClient = newRequestedUsageClient(extendedResourceNames, handle.GetPodsAssignedToNodeFunc())
 	}
 
 	return &LowNodeUtilization{
@@ -134,6 +133,7 @@ func NewLowNodeUtilization(args runtime.Object, handle frameworktypes.Handle) (f
 		underutilizationCriteria: underutilizationCriteria,
 		overutilizationCriteria:  overutilizationCriteria,
 		resourceNames:            resourceNames,
+		extendedResourceNames:    extendedResourceNames,
 		podFilter:                podFilter,
 		usageClient:              usageClient,
 	}, nil
@@ -159,7 +159,7 @@ func (l *LowNodeUtilization) Balance(ctx context.Context, nodes []*v1.Node) *fra
 	var thresholds map[string][]api.ResourceThresholds
 	if l.args.UseDeviationThresholds {
 		usage, thresholds = assessNodesUsagesAndRelativeThresholds(
-			nodesUsageMap,
+			filterResourceNamesFromNodeUsage(nodesUsageMap, l.resourceNames),
 			capacities,
 			l.args.Thresholds,
 			l.args.TargetThresholds,
@@ -212,8 +212,8 @@ func (l *LowNodeUtilization) Balance(ctx context.Context, nodes []*v1.Node) *fra
 					allPods: podListMap[nodeName],
 				},
 				thresholds: NodeThresholds{
-					lowResourceThreshold:  resourceThresholdsToNodeUsage(thresholds[nodeName][0], capacities[nodeName]),
-					highResourceThreshold: resourceThresholdsToNodeUsage(thresholds[nodeName][1], capacities[nodeName]),
+					lowResourceThreshold:  resourceThresholdsToNodeUsage(thresholds[nodeName][0], capacities[nodeName], append(l.extendedResourceNames, v1.ResourceCPU, v1.ResourceMemory, v1.ResourcePods)),
+					highResourceThreshold: resourceThresholdsToNodeUsage(thresholds[nodeName][1], capacities[nodeName], append(l.extendedResourceNames, v1.ResourceCPU, v1.ResourceMemory, v1.ResourcePods)),
 				},
 			})
 		}
@@ -291,42 +291,11 @@ func (l *LowNodeUtilization) Balance(ctx context.Context, nodes []*v1.Node) *fra
 		l.handle.Evictor(),
 		evictions.EvictOptions{StrategyName: LowNodeUtilizationPluginName},
 		l.podFilter,
-		l.resourceNames,
+		l.extendedResourceNames,
 		continueEvictionCond,
 		l.usageClient,
 		nodeLimit,
 	)
 
 	return nil
-}
-
-func setDefaultForLNUThresholds(thresholds, targetThresholds api.ResourceThresholds, useDeviationThresholds bool) {
-	// check if Pods/CPU/Mem are set, if not, set them to 100
-	if _, ok := thresholds[v1.ResourcePods]; !ok {
-		if useDeviationThresholds {
-			thresholds[v1.ResourcePods] = MinResourcePercentage
-			targetThresholds[v1.ResourcePods] = MinResourcePercentage
-		} else {
-			thresholds[v1.ResourcePods] = MaxResourcePercentage
-			targetThresholds[v1.ResourcePods] = MaxResourcePercentage
-		}
-	}
-	if _, ok := thresholds[v1.ResourceCPU]; !ok {
-		if useDeviationThresholds {
-			thresholds[v1.ResourceCPU] = MinResourcePercentage
-			targetThresholds[v1.ResourceCPU] = MinResourcePercentage
-		} else {
-			thresholds[v1.ResourceCPU] = MaxResourcePercentage
-			targetThresholds[v1.ResourceCPU] = MaxResourcePercentage
-		}
-	}
-	if _, ok := thresholds[v1.ResourceMemory]; !ok {
-		if useDeviationThresholds {
-			thresholds[v1.ResourceMemory] = MinResourcePercentage
-			targetThresholds[v1.ResourceMemory] = MinResourcePercentage
-		} else {
-			thresholds[v1.ResourceMemory] = MaxResourcePercentage
-			targetThresholds[v1.ResourceMemory] = MaxResourcePercentage
-		}
-	}
 }

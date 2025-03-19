@@ -135,10 +135,15 @@ func resourceThreshold(nodeCapacity api.ReferencedResourceList, resourceName v1.
 	return resource.NewQuantity(resourceCapacityFraction(resourceCapacityQuantity.Value()), defaultFormat)
 }
 
-func resourceThresholdsToNodeUsage(resourceThresholds api.ResourceThresholds, capacity api.ReferencedResourceList) api.ReferencedResourceList {
+func resourceThresholdsToNodeUsage(resourceThresholds api.ResourceThresholds, capacity api.ReferencedResourceList, resourceNames []v1.ResourceName) api.ReferencedResourceList {
 	nodeUsage := make(api.ReferencedResourceList)
 	for resourceName, threshold := range resourceThresholds {
 		nodeUsage[resourceName] = resourceThreshold(capacity, resourceName, threshold)
+	}
+	for _, resourceName := range resourceNames {
+		if _, exists := nodeUsage[resourceName]; !exists {
+			nodeUsage[resourceName] = capacity[resourceName]
+		}
 	}
 	return nodeUsage
 }
@@ -226,7 +231,7 @@ func evictPodsFromSourceNodes(
 	}
 
 	// log message in one line
-	klog.V(1).InfoS("Total capacity to be moved", usageToKeysAndValues(totalAvailableUsage)...)
+	klog.V(0).InfoS("Total capacity to be moved", usageToKeysAndValues(totalAvailableUsage)...)
 
 	for _, node := range sourceNodes {
 		klog.V(3).InfoS("Evicting pods from node", "node", klog.KObj(node.node), "usage", node.usage)
@@ -395,8 +400,8 @@ func isNodeAboveTargetUtilization(usage NodeUsage, threshold api.ReferencedResou
 // isNodeAboveThreshold checks if a node is over a threshold
 // At least one resource has to be above the threshold
 func isNodeAboveThreshold(usage, threshold api.ResourceThresholds) bool {
-	for name, resourceValue := range usage {
-		if threshold[name] < resourceValue {
+	for name := range threshold {
+		if threshold[name] < usage[name] {
 			return true
 		}
 	}
@@ -406,8 +411,8 @@ func isNodeAboveThreshold(usage, threshold api.ResourceThresholds) bool {
 // isNodeBelowThreshold checks if a node is under a threshold
 // All resources have to be below the threshold
 func isNodeBelowThreshold(usage, threshold api.ResourceThresholds) bool {
-	for name, resourceValue := range usage {
-		if threshold[name] < resourceValue {
+	for name, _ := range threshold {
+		if threshold[name] < usage[name] {
 			return false
 		}
 	}
@@ -578,4 +583,33 @@ func sanitizeUserProvidedThresholds(
 		newHigh[rname] = highValue
 	}
 	return newLow, newHigh
+}
+
+func uniquifyResourceNames(resourceNames []v1.ResourceName) []v1.ResourceName {
+	resourceNamesMap := map[v1.ResourceName]struct{}{
+		v1.ResourceCPU:    struct{}{},
+		v1.ResourceMemory: struct{}{},
+		v1.ResourcePods:   struct{}{},
+	}
+	for _, resourceName := range resourceNames {
+		resourceNamesMap[resourceName] = struct{}{}
+	}
+	extendedResourceNames := []v1.ResourceName{}
+	for resourceName := range resourceNamesMap {
+		extendedResourceNames = append(extendedResourceNames, resourceName)
+	}
+	return extendedResourceNames
+}
+
+func filterResourceNamesFromNodeUsage(nodeUsage map[string]api.ReferencedResourceList, resourceNames []v1.ResourceName) map[string]api.ReferencedResourceList {
+	newNodeUsage := make(map[string]api.ReferencedResourceList)
+	for nodeName, usage := range nodeUsage {
+		newNodeUsage[nodeName] = api.ReferencedResourceList{}
+		for _, resourceName := range resourceNames {
+			if _, exists := usage[resourceName]; exists {
+				newNodeUsage[nodeName][resourceName] = usage[resourceName]
+			}
+		}
+	}
+	return newNodeUsage
 }

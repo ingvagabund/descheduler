@@ -38,13 +38,13 @@ const HighNodeUtilizationPluginName = "HighNodeUtilization"
 // Note that CPU/Memory requests are used to calculate nodes' utilization and not the actual resource usage.
 
 type HighNodeUtilization struct {
-	handle                   frameworktypes.Handle
-	args                     *HighNodeUtilizationArgs
-	podFilter                func(pod *v1.Pod) bool
-	underutilizationCriteria []interface{}
-	resourceNames            []v1.ResourceName
-	targetThresholds         api.ResourceThresholds
-	usageClient              usageClient
+	handle                               frameworktypes.Handle
+	args                                 *HighNodeUtilizationArgs
+	podFilter                            func(pod *v1.Pod) bool
+	underutilizationCriteria             []interface{}
+	resourceNames, extendedResourceNames []v1.ResourceName
+	targetThresholds                     api.ResourceThresholds
+	usageClient                          usageClient
 }
 
 var _ frameworktypes.BalancePlugin = &HighNodeUtilization{}
@@ -58,7 +58,7 @@ func NewHighNodeUtilization(args runtime.Object, handle frameworktypes.Handle) (
 
 	targetThresholds := make(api.ResourceThresholds)
 	setDefaultForThresholds(highNodeUtilizatioArgs.Thresholds, targetThresholds)
-	resourceNames := getResourceNames(targetThresholds)
+	resourceNames := getResourceNames(highNodeUtilizatioArgs.Thresholds)
 
 	underutilizationCriteria := []interface{}{
 		"CPU", highNodeUtilizatioArgs.Thresholds[v1.ResourceCPU],
@@ -78,14 +78,16 @@ func NewHighNodeUtilization(args runtime.Object, handle frameworktypes.Handle) (
 		return nil, fmt.Errorf("error initializing pod filter function: %v", err)
 	}
 
+	extendedResourceNames := uniquifyResourceNames(append(resourceNames, v1.ResourceCPU, v1.ResourceMemory, v1.ResourcePods))
 	return &HighNodeUtilization{
 		handle:                   handle,
 		args:                     highNodeUtilizatioArgs,
 		resourceNames:            resourceNames,
+		extendedResourceNames:    extendedResourceNames,
 		targetThresholds:         targetThresholds,
 		underutilizationCriteria: underutilizationCriteria,
 		podFilter:                podFilter,
-		usageClient:              newRequestedUsageClient(resourceNames, handle.GetPodsAssignedToNodeFunc()),
+		usageClient:              newRequestedUsageClient(extendedResourceNames, handle.GetPodsAssignedToNodeFunc()),
 	}, nil
 }
 
@@ -111,6 +113,8 @@ func (h *HighNodeUtilization) Balance(ctx context.Context, nodes []*v1.Node) *fr
 		h.args.Thresholds,
 		h.targetThresholds,
 	)
+
+	fmt.Printf("thresholds: %#v\n", thresholds)
 
 	nodeGroups := classifyNodeUsage(
 		usage,
@@ -149,8 +153,8 @@ func (h *HighNodeUtilization) Balance(ctx context.Context, nodes []*v1.Node) *fr
 					allPods: podListMap[nodeName],
 				},
 				thresholds: NodeThresholds{
-					lowResourceThreshold:  resourceThresholdsToNodeUsage(thresholds[nodeName][0], capacities[nodeName]),
-					highResourceThreshold: resourceThresholdsToNodeUsage(thresholds[nodeName][1], capacities[nodeName]),
+					lowResourceThreshold:  resourceThresholdsToNodeUsage(thresholds[nodeName][0], capacities[nodeName], h.extendedResourceNames),
+					highResourceThreshold: resourceThresholdsToNodeUsage(thresholds[nodeName][1], capacities[nodeName], h.extendedResourceNames),
 				},
 			})
 		}
@@ -202,7 +206,7 @@ func (h *HighNodeUtilization) Balance(ctx context.Context, nodes []*v1.Node) *fr
 		h.handle.Evictor(),
 		evictions.EvictOptions{StrategyName: HighNodeUtilizationPluginName},
 		h.podFilter,
-		h.resourceNames,
+		h.extendedResourceNames,
 		continueEvictionCond,
 		h.usageClient,
 		nil,
@@ -212,21 +216,15 @@ func (h *HighNodeUtilization) Balance(ctx context.Context, nodes []*v1.Node) *fr
 }
 
 func setDefaultForThresholds(thresholds, targetThresholds api.ResourceThresholds) {
-	// check if Pods/CPU/Mem are set, if not, set them to 100
-	if _, ok := thresholds[v1.ResourcePods]; !ok {
-		thresholds[v1.ResourcePods] = MaxResourcePercentage
+	if _, ok := thresholds[v1.ResourcePods]; ok {
+		targetThresholds[v1.ResourcePods] = MaxResourcePercentage
 	}
-	if _, ok := thresholds[v1.ResourceCPU]; !ok {
-		thresholds[v1.ResourceCPU] = MaxResourcePercentage
+	if _, ok := thresholds[v1.ResourceCPU]; ok {
+		targetThresholds[v1.ResourceCPU] = MaxResourcePercentage
 	}
-	if _, ok := thresholds[v1.ResourceMemory]; !ok {
-		thresholds[v1.ResourceMemory] = MaxResourcePercentage
+	if _, ok := thresholds[v1.ResourceMemory]; ok {
+		targetThresholds[v1.ResourceMemory] = MaxResourcePercentage
 	}
-
-	// Default targetThreshold resource values to 100
-	targetThresholds[v1.ResourcePods] = MaxResourcePercentage
-	targetThresholds[v1.ResourceCPU] = MaxResourcePercentage
-	targetThresholds[v1.ResourceMemory] = MaxResourcePercentage
 
 	for name := range thresholds {
 		if !nodeutil.IsBasicResource(name) {
