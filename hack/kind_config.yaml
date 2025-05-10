@@ -8,6 +8,7 @@ nodes:
       kind: JoinConfiguration
       nodeRegistration:
         kubeletExtraArgs:
+          v: "4"
           node-labels: "topology.kubernetes.io/zone=local-a"
 - role: worker
   kubeadmConfigPatches:
@@ -15,4 +16,5 @@ nodes:
       kind: JoinConfiguration
       nodeRegistration:
         kubeletExtraArgs:
+          v: "4"
           node-labels: "topology.kubernetes.io/zone=local-b"
