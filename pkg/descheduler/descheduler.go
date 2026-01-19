@@ -22,6 +22,7 @@ import (
 	"math"
 	"net/http"
 	"strconv"
+	"sync"
 	"time"
 
 	promapi "github.com/prometheus/client_golang/api"
@@ -35,6 +36,7 @@ import (
 	schedulingv1 "k8s.io/api/scheduling/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -84,16 +86,64 @@ type profileRunner struct {
 	descheduleEPs, balanceEPs eprunner
 }
 
+type evictedPodInfo struct {
+	Namespace string
+	Name      string
+	UID       string
+}
+
+type evictedPodsCache struct {
+	sync.RWMutex
+	pods map[string]*evictedPodInfo
+}
+
+func newEvictedPodsCache() *evictedPodsCache {
+	return &evictedPodsCache{
+		pods: make(map[string]*evictedPodInfo),
+	}
+}
+
+func (c *evictedPodsCache) add(pod *v1.Pod) {
+	c.Lock()
+	defer c.Unlock()
+	c.pods[string(pod.UID)] = &evictedPodInfo{
+		Namespace: pod.Namespace,
+		Name:      pod.Name,
+		UID:       string(pod.UID),
+	}
+}
+
+func (c *evictedPodsCache) list() []*evictedPodInfo {
+	c.RLock()
+	defer c.RUnlock()
+	pods := make([]*evictedPodInfo, 0, len(c.pods))
+	for _, pod := range c.pods {
+		podCopy := *pod
+		pods = append(pods, &podCopy)
+	}
+	return pods
+}
+
+func (c *evictedPodsCache) clear() {
+	c.Lock()
+	defer c.Unlock()
+	c.pods = make(map[string]*evictedPodInfo)
+}
+
 type descheduler struct {
 	rs                                *options.DeschedulerServer
+	client                            clientset.Interface
 	ir                                *informerResources
 	getPodsAssignedToNode             podutil.GetPodsAssignedToNodeFunc
 	sharedInformerFactory             informers.SharedInformerFactory
+	fakeClient                        *fakeclientset.Clientset
+	fakeSharedInformerFactory         informers.SharedInformerFactory
+	evictedPodsCache                  *evictedPodsCache
 	namespacedSecretsLister           corev1listers.SecretNamespaceLister
 	deschedulerPolicy                 *api.DeschedulerPolicy
 	eventRecorder                     events.EventRecorder
 	podEvictor                        *evictions.PodEvictor
-	podEvictionReactionFnc            func(*fakeclientset.Clientset) func(action core.Action) (bool, runtime.Object, error)
+	podEvictionReactionFnc            func(*fakeclientset.Clientset, *evictedPodsCache) func(action core.Action) (bool, runtime.Object, error)
 	metricsCollector                  *metricscollector.MetricsCollector
 	prometheusClient                  promapi.Client
 	previousPrometheusClientTransport *http.Transport
@@ -104,17 +154,27 @@ type descheduler struct {
 
 type informerResources struct {
 	sharedInformerFactory informers.SharedInformerFactory
+	fakeClient            *fakeclientset.Clientset
+	fakeFactory           informers.SharedInformerFactory
 	resourceToInformer    map[schema.GroupVersionResource]informers.GenericInformer
 }
 
-func newInformerResources(sharedInformerFactory informers.SharedInformerFactory) *informerResources {
+func newInformerResources(sharedInformerFactory informers.SharedInformerFactory, fakeClient *fakeclientset.Clientset, fakeFactory informers.SharedInformerFactory) *informerResources {
+	if fakeClient == nil {
+		panic("informerResources.fakeClient is nil")
+	}
+	if fakeFactory == nil {
+		panic("informerResources.fakeFactory is nil")
+	}
 	return &informerResources{
 		sharedInformerFactory: sharedInformerFactory,
+		fakeClient:            fakeClient,
+		fakeFactory:           fakeFactory,
 		resourceToInformer:    make(map[schema.GroupVersionResource]informers.GenericInformer),
 	}
 }
 
-func (ir *informerResources) Uses(resources ...schema.GroupVersionResource) error {
+func (ir *informerResources) uses(resources ...schema.GroupVersionResource) error {
 	for _, resource := range resources {
 		informer, err := ir.sharedInformerFactory.ForResource(resource)
 		if err != nil {
@@ -122,27 +182,183 @@ func (ir *informerResources) Uses(resources ...schema.GroupVersionResource) erro
 		}
 
 		ir.resourceToInformer[resource] = informer
+
+		_, err = ir.fakeFactory.ForResource(resource)
+		if err != nil {
+			return fmt.Errorf("error getting resource %s for fake factory: %w", resource, err)
+		}
+
+		_, err = informer.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
+			AddFunc: func(obj interface{}) {
+				runtimeObj, ok := obj.(runtime.Object)
+				if !ok {
+					klog.ErrorS(nil, "object is not a runtime.Object", "resource", resource)
+					return
+				}
+				if err := ir.fakeClient.Tracker().Add(runtimeObj); err != nil {
+					klog.ErrorS(err, "failed to add object to fake client", "resource", resource)
+				}
+			},
+			UpdateFunc: func(oldObj, newObj interface{}) {
+				runtimeObj, ok := newObj.(runtime.Object)
+				if !ok {
+					klog.ErrorS(nil, "object is not a runtime.Object", "resource", resource)
+					return
+				}
+				if err := ir.fakeClient.Tracker().Update(resource, runtimeObj, ""); err != nil {
+					klog.ErrorS(err, "failed to update object in fake client", "resource", resource)
+				}
+			},
+			DeleteFunc: func(obj interface{}) {
+				runtimeObj, ok := obj.(runtime.Object)
+				if !ok {
+					klog.ErrorS(nil, "object is not a runtime.Object", "resource", resource)
+					return
+				}
+				metaObj, err := meta.Accessor(runtimeObj)
+				if err != nil {
+					klog.ErrorS(err, "failed to get object metadata", "resource", resource)
+					return
+				}
+				if err := ir.fakeClient.Tracker().Delete(resource, metaObj.GetNamespace(), metaObj.GetName()); err != nil {
+					klog.ErrorS(err, "failed to delete object from fake client", "resource", resource)
+				}
+			},
+		})
+		if err != nil {
+			return fmt.Errorf("error adding event handler for resource %s: %w", resource, err)
+		}
 	}
 	return nil
 }
 
-// CopyTo Copy informer subscriptions to the new factory and objects to the fake client so that the backing caches are populated for when listers are used.
-func (ir *informerResources) CopyTo(fakeClient *fakeclientset.Clientset, newFactory informers.SharedInformerFactory) error {
+// syncInitialState performs an initial sync of all watched resources from the real client to the fake client
+func (ir *informerResources) syncInitialState() error {
 	for resource, informer := range ir.resourceToInformer {
-		_, err := newFactory.ForResource(resource)
-		if err != nil {
-			return fmt.Errorf("error getting resource %s: %w", resource, err)
-		}
-
 		objects, err := informer.Lister().List(labels.Everything())
 		if err != nil {
-			return fmt.Errorf("error listing %s: %w", informer, err)
+			return fmt.Errorf("error listing %s: %w", resource, err)
 		}
 
 		for _, object := range objects {
-			fakeClient.Tracker().Add(object)
+			if err := ir.fakeClient.Tracker().Add(object); err != nil {
+				return fmt.Errorf("error adding object to fake client for resource %s: %w", resource, err)
+			}
 		}
 	}
+	return nil
+}
+
+func waitForPodsCondition(pods []*evictedPodInfo, checkFn func(*evictedPodInfo) (bool, error), successMsg string) error {
+	if len(pods) == 0 {
+		return nil
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	err := wait.PollUntilContextTimeout(ctx, 100*time.Millisecond, 5*time.Second, true, func(ctx context.Context) (bool, error) {
+		for _, pod := range pods {
+			satisfied, err := checkFn(pod)
+			if err != nil {
+				return false, err
+			}
+			if !satisfied {
+				return false, nil
+			}
+		}
+		return true, nil
+	})
+	if err != nil {
+		return err
+	}
+
+	klog.V(4).InfoS(successMsg)
+	return nil
+}
+
+// restoreEvictedPods restores pods from the evicted pods cache back to the fake client
+func (ir *informerResources) restoreEvictedPods(evictedCache *evictedPodsCache) error {
+	if evictedCache == nil {
+		return fmt.Errorf("evictedCache is not set")
+	}
+
+	podInformer, ok := ir.resourceToInformer[v1.SchemeGroupVersion.WithResource("pods")]
+	if !ok {
+		return fmt.Errorf("pod informer not found in resourceToInformer")
+	}
+
+	evictedPods := evictedCache.list()
+	if err := waitForPodsCondition(evictedPods, func(pod *evictedPodInfo) (bool, error) {
+		_, exists, err := ir.fakeFactory.Core().V1().Pods().Informer().GetIndexer().GetByKey(cache.MetaObjectToName(&metav1.ObjectMeta{Namespace: pod.Namespace, Name: pod.Name}).String())
+		if err != nil {
+			klog.V(4).InfoS("Error checking indexer for pod", "namespace", pod.Namespace, "name", pod.Name, "error", err)
+			return false, nil
+		}
+		if exists {
+			klog.V(4).InfoS("Pod still exists in fake indexer, waiting", "namespace", pod.Namespace, "name", pod.Name)
+			return false, nil
+		}
+		klog.V(4).InfoS("Pod no longer in fake indexer", "namespace", pod.Namespace, "name", pod.Name)
+		return true, nil
+	}, "All evicted pods removed from fake indexer"); err != nil {
+		return fmt.Errorf("timeout waiting for evicted pods to be removed from fake indexer: %w", err)
+	}
+
+	var restoredPods []*evictedPodInfo
+	for _, evictedPodInfo := range evictedCache.list() {
+		obj, err := podInformer.Lister().ByNamespace(evictedPodInfo.Namespace).Get(evictedPodInfo.Name)
+		if err != nil {
+			klog.V(3).InfoS("Pod not found in real client, skipping restoration", "namespace", evictedPodInfo.Namespace, "name", evictedPodInfo.Name, "error", err)
+			continue
+		}
+
+		pod, ok := obj.(*v1.Pod)
+		if !ok {
+			klog.ErrorS(nil, "Object is not a pod", "namespace", evictedPodInfo.Namespace, "name", evictedPodInfo.Name)
+			continue
+		}
+
+		if string(pod.UID) != evictedPodInfo.UID {
+			klog.V(3).InfoS("Pod UID mismatch, skipping restoration", "namespace", evictedPodInfo.Namespace, "name", evictedPodInfo.Name, "expectedUID", evictedPodInfo.UID, "actualUID", string(pod.UID))
+			continue
+		}
+
+		if err := ir.fakeClient.Tracker().Add(pod); err != nil && !apierrors.IsAlreadyExists(err) {
+			return fmt.Errorf("failed to restore pod %s/%s to fake client: %w", evictedPodInfo.Namespace, evictedPodInfo.Name, err)
+		}
+		klog.V(4).InfoS("Successfully restored pod to fake client", "namespace", evictedPodInfo.Namespace, "name", evictedPodInfo.Name, "uid", evictedPodInfo.UID)
+		restoredPods = append(restoredPods, evictedPodInfo)
+	}
+
+	if err := waitForPodsCondition(restoredPods, func(pod *evictedPodInfo) (bool, error) {
+		podObj, err := ir.fakeFactory.Core().V1().Pods().Lister().Pods(pod.Namespace).Get(pod.Name)
+		if err != nil {
+			klog.V(4).InfoS("Pod not yet accessible in fake informer, waiting", "namespace", pod.Namespace, "name", pod.Name)
+			return false, nil
+		}
+		klog.V(4).InfoS("Pod accessible in fake informer", "namespace", pod.Namespace, "name", pod.Name, "node", podObj.Spec.NodeName)
+		return true, nil
+	}, "All restored pods are accessible in fake informer"); err != nil {
+		return fmt.Errorf("timeout waiting for pods to be accessible in fake informer: %w", err)
+	}
+
+	if err := waitForPodsCondition(restoredPods, func(pod *evictedPodInfo) (bool, error) {
+		_, exists, err := ir.fakeFactory.Core().V1().Pods().Informer().GetIndexer().GetByKey(cache.MetaObjectToName(&metav1.ObjectMeta{Namespace: pod.Namespace, Name: pod.Name}).String())
+		if err != nil {
+			klog.V(4).InfoS("Error checking indexer for restored pod", "namespace", pod.Namespace, "name", pod.Name, "error", err)
+			return false, nil
+		}
+		if !exists {
+			klog.V(4).InfoS("Restored pod not yet in fake indexer, waiting", "namespace", pod.Namespace, "name", pod.Name)
+			return false, nil
+		}
+		klog.V(4).InfoS("Restored pod now in fake indexer", "namespace", pod.Namespace, "name", pod.Name)
+		return true, nil
+	}, "All restored pods are now in fake indexer"); err != nil {
+		return fmt.Errorf("timeout waiting for restored pods to appear in fake indexer: %w", err)
+	}
+
 	return nil
 }
 
@@ -155,29 +371,71 @@ func metricsProviderListToMap(providersList []api.MetricsProvider) map[api.Metri
 }
 
 func newDescheduler(ctx context.Context, rs *options.DeschedulerServer, deschedulerPolicy *api.DeschedulerPolicy, evictionPolicyGroupVersion string, eventRecorder events.EventRecorder, sharedInformerFactory, namespacedSharedInformerFactory informers.SharedInformerFactory) (*descheduler, error) {
-	podInformer := sharedInformerFactory.Core().V1().Pods().Informer()
+	nodeSelector := labels.Everything()
+	if deschedulerPolicy.NodeSelector != nil {
+		sel, err := labels.Parse(*deschedulerPolicy.NodeSelector)
+		if err != nil {
+			return nil, err
+		}
+		nodeSelector = sel
+	}
 
-	ir := newInformerResources(sharedInformerFactory)
-	ir.Uses(v1.SchemeGroupVersion.WithResource("pods"),
-		v1.SchemeGroupVersion.WithResource("nodes"),
-		// Future work could be to let each plugin declare what type of resources it needs; that way dry runs would stay
-		// consistent with the real runs without having to keep the list here in sync.
-		v1.SchemeGroupVersion.WithResource("namespaces"),                 // Used by the defaultevictor plugin
-		schedulingv1.SchemeGroupVersion.WithResource("priorityclasses"),  // Used by the defaultevictor plugin
-		policyv1.SchemeGroupVersion.WithResource("poddisruptionbudgets"), // Used by the defaultevictor plugin
-		v1.SchemeGroupVersion.WithResource("persistentvolumeclaims"),     // Used by the defaultevictor plugin
-	) // Used by the defaultevictor plugin
+	var operationalClient clientset.Interface
+	var operationalSharedInformerFactory informers.SharedInformerFactory
+	var operationalPodInformer cache.SharedIndexInformer
+	var fakeClient *fakeclientset.Clientset
+	var fakeSharedInformerFactory informers.SharedInformerFactory
+	var ir *informerResources
+	var evictedCache *evictedPodsCache
 
-	getPodsAssignedToNode, err := podutil.BuildGetPodsAssignedToNodeFunc(podInformer)
+	if rs.DryRun {
+		klog.V(3).Infof("Building a cached client from the cluster for the dry run")
+		fakeClient = fakeclientset.NewSimpleClientset()
+		evictedCache = newEvictedPodsCache()
+		fakeClient.PrependReactor("create", "pods", podEvictionReactionFnc(fakeClient, evictedCache))
+		fakeSharedInformerFactory = informers.NewSharedInformerFactory(fakeClient, 0)
+
+		ir = newInformerResources(sharedInformerFactory, fakeClient, fakeSharedInformerFactory)
+		err := ir.uses(v1.SchemeGroupVersion.WithResource("pods"),
+			v1.SchemeGroupVersion.WithResource("nodes"),
+			// Future work could be to let each plugin declare what type of resources it needs; that way dry runs would stay
+			// consistent with the real runs without having to keep the list here in sync.
+			v1.SchemeGroupVersion.WithResource("namespaces"),                 // Used by the defaultevictor plugin
+			schedulingv1.SchemeGroupVersion.WithResource("priorityclasses"),  // Used by the defaultevictor plugin
+			policyv1.SchemeGroupVersion.WithResource("poddisruptionbudgets"), // Used by the defaultevictor plugin
+			v1.SchemeGroupVersion.WithResource("persistentvolumeclaims"),     // Used by the defaultevictor plugin
+		) // Used by the defaultevictor plugin
+		if err != nil {
+			return nil, err
+		}
+
+		if err := ir.syncInitialState(); err != nil {
+			return nil, err
+		}
+
+		operationalClient = fakeClient
+		operationalSharedInformerFactory = fakeSharedInformerFactory
+		operationalPodInformer = fakeSharedInformerFactory.Core().V1().Pods().Informer()
+	} else {
+		operationalClient = rs.Client
+		operationalSharedInformerFactory = sharedInformerFactory
+		operationalPodInformer = sharedInformerFactory.Core().V1().Pods().Informer()
+	}
+
+	getPodsAssignedToNode, err := podutil.BuildGetPodsAssignedToNodeFunc(operationalPodInformer)
 	if err != nil {
 		return nil, fmt.Errorf("build get pods assigned to node function error: %v", err)
 	}
 
+	if err := nodeutil.AddNodeSelectorIndexer(operationalSharedInformerFactory.Core().V1().Nodes().Informer(), indexerNodeSelectorGlobal, nodeSelector); err != nil {
+		return nil, err
+	}
+
 	podEvictor, err := evictions.NewPodEvictor(
 		ctx,
-		rs.Client,
+		operationalClient,
 		eventRecorder,
-		podInformer,
+		operationalPodInformer,
 		rs.DefaultFeatureGates,
 		evictions.NewOptions().
 			WithPolicyGroupVersion(evictionPolicyGroupVersion).
@@ -194,34 +452,25 @@ func newDescheduler(ctx context.Context, rs *options.DeschedulerServer, deschedu
 	}
 
 	desch := &descheduler{
-		rs:                     rs,
-		ir:                     ir,
-		getPodsAssignedToNode:  getPodsAssignedToNode,
-		sharedInformerFactory:  sharedInformerFactory,
-		deschedulerPolicy:      deschedulerPolicy,
-		eventRecorder:          eventRecorder,
-		podEvictor:             podEvictor,
-		podEvictionReactionFnc: podEvictionReactionFnc,
-		prometheusClient:       rs.PrometheusClient,
-		queue:                  workqueue.NewRateLimitingQueueWithConfig(workqueue.DefaultControllerRateLimiter(), workqueue.RateLimitingQueueConfig{Name: "descheduler"}),
-		metricsProviders:       metricsProviderListToMap(deschedulerPolicy.MetricsProviders),
-	}
-
-	nodeSelector := labels.Everything()
-	if deschedulerPolicy.NodeSelector != nil {
-		sel, err := labels.Parse(*deschedulerPolicy.NodeSelector)
-		if err != nil {
-			return nil, err
-		}
-		nodeSelector = sel
-	}
-
-	if err := nodeutil.AddNodeSelectorIndexer(sharedInformerFactory.Core().V1().Nodes().Informer(), indexerNodeSelectorGlobal, nodeSelector); err != nil {
-		return nil, err
+		rs:                        rs,
+		client:                    operationalClient,
+		ir:                        ir,
+		getPodsAssignedToNode:     getPodsAssignedToNode,
+		sharedInformerFactory:     operationalSharedInformerFactory,
+		fakeClient:                fakeClient,
+		fakeSharedInformerFactory: fakeSharedInformerFactory,
+		evictedPodsCache:          evictedCache,
+		deschedulerPolicy:         deschedulerPolicy,
+		eventRecorder:             eventRecorder,
+		podEvictor:                podEvictor,
+		podEvictionReactionFnc:    podEvictionReactionFnc,
+		prometheusClient:          rs.PrometheusClient,
+		queue:                     workqueue.NewRateLimitingQueueWithConfig(workqueue.DefaultControllerRateLimiter(), workqueue.RateLimitingQueueConfig{Name: "descheduler"}),
+		metricsProviders:          metricsProviderListToMap(deschedulerPolicy.MetricsProviders),
 	}
 
 	if rs.MetricsClient != nil {
-		desch.metricsCollector = metricscollector.NewMetricsCollector(sharedInformerFactory.Core().V1().Nodes().Lister(), rs.MetricsClient, nodeSelector)
+		desch.metricsCollector = metricscollector.NewMetricsCollector(operationalSharedInformerFactory.Core().V1().Nodes().Lister(), rs.MetricsClient, nodeSelector)
 	}
 
 	prometheusProvider := desch.metricsProviders[api.PrometheusMetrics]
@@ -360,64 +609,24 @@ func (d *descheduler) runDeschedulerLoop(ctx context.Context) error {
 		metrics.LoopDuration.With(map[string]string{}).Observe(time.Since(loopStartDuration).Seconds())
 	}(time.Now())
 
-	var client clientset.Interface
-	// When the dry mode is enable, collect all the relevant objects (mostly pods) under a fake client.
-	// So when evicting pods while running multiple strategies in a row have the cummulative effect
-	// as is when evicting pods for real.
-	if d.rs.DryRun {
-		klog.V(3).Infof("Building a cached client from the cluster for the dry run")
-		// Create a new cache so we start from scratch without any leftovers
-		fakeClient := fakeclientset.NewSimpleClientset()
-		// simulate a pod eviction by deleting a pod
-		fakeClient.PrependReactor("create", "pods", d.podEvictionReactionFnc(fakeClient))
-		fakeSharedInformerFactory := informers.NewSharedInformerFactory(fakeClient, 0)
-
-		err := d.ir.CopyTo(fakeClient, fakeSharedInformerFactory)
-		if err != nil {
-			return err
-		}
-
-		// create a new instance of the shared informer factor from the cached client
-		// register the pod informer, otherwise it will not get running
-		d.getPodsAssignedToNode, err = podutil.BuildGetPodsAssignedToNodeFunc(fakeSharedInformerFactory.Core().V1().Pods().Informer())
-		if err != nil {
-			return fmt.Errorf("build get pods assigned to node function error: %v", err)
-		}
-
-		nodeSelector := labels.Everything()
-		if d.deschedulerPolicy.NodeSelector != nil {
-			sel, err := labels.Parse(*d.deschedulerPolicy.NodeSelector)
-			if err != nil {
-				return err
-			}
-			nodeSelector = sel
-		}
-		// TODO(ingvagabund): copy paste all relevant indexers from the real client to the fake one
-		// TODO(ingvagabund): register one indexer per each profile. Respect the precedence of no profile-level node selector is specified.
-		//                    Also, keep a cache of node label selectors to detect duplicates to avoid creating an extra informer.
-
-		if err := nodeutil.AddNodeSelectorIndexer(fakeSharedInformerFactory.Core().V1().Nodes().Informer(), indexerNodeSelectorGlobal, nodeSelector); err != nil {
-			return err
-		}
-
-		fakeCtx, cncl := context.WithCancel(context.TODO())
-		defer cncl()
-		fakeSharedInformerFactory.Start(fakeCtx.Done())
-		fakeSharedInformerFactory.WaitForCacheSync(fakeCtx.Done())
-
-		client = fakeClient
-		d.sharedInformerFactory = fakeSharedInformerFactory
-	} else {
-		client = d.rs.Client
-	}
-
-	klog.V(3).Infof("Setting up the pod evictor")
-	d.podEvictor.SetClient(client)
+	klog.V(3).Infof("Resetting pod evictor counters")
 	d.podEvictor.ResetCounters()
 
-	d.runProfiles(ctx, client)
+	d.runProfiles(ctx, d.client)
 
 	klog.V(1).InfoS("Number of evictions/requests", "totalEvicted", d.podEvictor.TotalEvicted(), "evictionRequests", d.podEvictor.TotalEvictionRequests())
+
+	if d.rs.DryRun {
+		if d.ir == nil || d.evictedPodsCache == nil {
+			panic(fmt.Errorf("d.ir or d.evictedPodsCache not initialized"))
+		}
+		klog.V(3).Infof("Restoring evicted pods from cache")
+		if err := d.ir.restoreEvictedPods(d.evictedPodsCache); err != nil {
+			klog.ErrorS(err, "Failed to restore evicted pods")
+			return fmt.Errorf("failed to restore evicted pods: %w", err)
+		}
+		d.evictedPodsCache.clear()
+	}
 
 	return nil
 }
@@ -591,7 +800,7 @@ func validateVersionCompatibility(discovery discovery.DiscoveryInterface, desche
 	return nil
 }
 
-func podEvictionReactionFnc(fakeClient *fakeclientset.Clientset) func(action core.Action) (bool, runtime.Object, error) {
+func podEvictionReactionFnc(fakeClient *fakeclientset.Clientset, evictedCache *evictedPodsCache) func(action core.Action) (bool, runtime.Object, error) {
 	return func(action core.Action) (bool, runtime.Object, error) {
 		if action.GetSubresource() == "eviction" {
 			createAct, matched := action.(core.CreateActionImpl)
@@ -602,12 +811,26 @@ func podEvictionReactionFnc(fakeClient *fakeclientset.Clientset) func(action cor
 			if !matched {
 				return false, nil, fmt.Errorf("unable to convert action object into *policy.Eviction")
 			}
+
+			var pod *v1.Pod
+			if evictedCache != nil {
+				podObj, err := fakeClient.Tracker().Get(action.GetResource(), eviction.GetNamespace(), eviction.GetName())
+				if err == nil {
+					if p, ok := podObj.(*v1.Pod); ok {
+						pod = p
+					}
+				}
+			}
+
 			if err := fakeClient.Tracker().Delete(action.GetResource(), eviction.GetNamespace(), eviction.GetName()); err != nil {
 				return false, nil, fmt.Errorf("unable to delete pod %v/%v: %v", eviction.GetNamespace(), eviction.GetName(), err)
 			}
+
+			if evictedCache != nil && pod != nil {
+				evictedCache.add(pod)
+			}
 			return true, nil, nil
 		}
-		// fallback to the default reactor
 		return false, nil, nil
 	}
 }
@@ -663,11 +886,17 @@ func RunDeschedulerStrategies(ctx context.Context, rs *options.DeschedulerServer
 	if metricProviderTokenReconciliation == secretReconciliation {
 		namespacedSharedInformerFactory.Start(ctx.Done())
 	}
+	if descheduler.fakeSharedInformerFactory != nil {
+		descheduler.fakeSharedInformerFactory.Start(ctx.Done())
+	}
 
 	sharedInformerFactory.WaitForCacheSync(ctx.Done())
 	descheduler.podEvictor.WaitForEventHandlersSync(ctx)
 	if metricProviderTokenReconciliation == secretReconciliation {
 		namespacedSharedInformerFactory.WaitForCacheSync(ctx.Done())
+	}
+	if descheduler.fakeSharedInformerFactory != nil {
+		descheduler.fakeSharedInformerFactory.WaitForCacheSync(ctx.Done())
 	}
 
 	if descheduler.metricsCollector != nil {

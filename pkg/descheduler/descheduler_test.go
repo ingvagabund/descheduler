@@ -3,6 +3,7 @@ package descheduler
 import (
 	"context"
 	"errors"
+	"flag"
 	"fmt"
 	"math/rand"
 	"net/http"
@@ -492,55 +493,283 @@ func TestPodEvictorReset(t *testing.T) {
 
 	internalDeschedulerPolicy := removePodsViolatingNodeTaintsPolicy()
 	ctxCancel, cancel := context.WithCancel(ctx)
-	rs, descheduler, client := initDescheduler(t, ctxCancel, initFeatureGates(), internalDeschedulerPolicy, nil, node1, node2, p1, p2)
+	_, descheduler, client := initDescheduler(t, ctxCancel, initFeatureGates(), internalDeschedulerPolicy, nil, node1, node2, p1, p2)
 	defer cancel()
 
 	var evictedPods []string
 	client.PrependReactor("create", "pods", podEvictionReactionTestingFnc(&evictedPods, nil, nil))
 
-	var fakeEvictedPods []string
-	descheduler.podEvictionReactionFnc = func(*fakeclientset.Clientset) func(action core.Action) (bool, runtime.Object, error) {
-		return podEvictionReactionTestingFnc(&fakeEvictedPods, nil, nil)
-	}
-
-	// a single pod eviction expected
+	// First descheduling cycle
 	klog.Infof("2 pod eviction expected per a descheduling cycle, 2 real evictions in total")
 	if err := descheduler.runDeschedulerLoop(ctx); err != nil {
 		t.Fatalf("Unable to run a descheduling loop: %v", err)
 	}
-	if descheduler.podEvictor.TotalEvicted() != 2 || len(evictedPods) != 2 || len(fakeEvictedPods) != 0 {
-		t.Fatalf("Expected (2,2,0) pods evicted, got (%v, %v, %v) instead", descheduler.podEvictor.TotalEvicted(), len(evictedPods), len(fakeEvictedPods))
+	if descheduler.podEvictor.TotalEvicted() != 2 || len(evictedPods) != 2 {
+		t.Fatalf("Expected (2,2) pods evicted, got (%v, %v) instead", descheduler.podEvictor.TotalEvicted(), len(evictedPods))
 	}
 
-	// a single pod eviction expected
+	// Second descheduling cycle
 	klog.Infof("2 pod eviction expected per a descheduling cycle, 4 real evictions in total")
 	if err := descheduler.runDeschedulerLoop(ctx); err != nil {
 		t.Fatalf("Unable to run a descheduling loop: %v", err)
 	}
-	if descheduler.podEvictor.TotalEvicted() != 2 || len(evictedPods) != 4 || len(fakeEvictedPods) != 0 {
-		t.Fatalf("Expected (2,4,0) pods evicted, got (%v, %v, %v) instead", descheduler.podEvictor.TotalEvicted(), len(evictedPods), len(fakeEvictedPods))
+	if descheduler.podEvictor.TotalEvicted() != 2 || len(evictedPods) != 4 {
+		t.Fatalf("Expected (2,4) pods evicted, got (%v, %v) instead", descheduler.podEvictor.TotalEvicted(), len(evictedPods))
+	}
+}
+
+func TestPodEvictorResetDryRun(t *testing.T) {
+	initPluginRegistry()
+
+	ctx := context.Background()
+	node1 := test.BuildTestNode("n1", 2000, 3000, 10, taintNodeNoSchedule)
+	node2 := test.BuildTestNode("n2", 2000, 3000, 10, nil)
+
+	ownerRef1 := test.GetReplicaSetOwnerRefList()
+	updatePod := func(pod *v1.Pod) {
+		pod.Namespace = "dev"
+		pod.ObjectMeta.OwnerReferences = ownerRef1
 	}
 
-	// check the fake client syncing and the right pods evicted
-	klog.Infof("Enabling the dry run mode")
-	rs.DryRun = true
-	evictedPods = []string{}
+	p1 := test.BuildTestPod("p1", 100, 0, node1.Name, updatePod)
+	p2 := test.BuildTestPod("p2", 100, 0, node1.Name, updatePod)
 
+	internalDeschedulerPolicy := removePodsViolatingNodeTaintsPolicy()
+	ctxCancel, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	// Create descheduler with DryRun mode
+	client := fakeclientset.NewSimpleClientset(node1, node2, p1, p2)
+	eventClient := fakeclientset.NewSimpleClientset(node1, node2, p1, p2)
+
+	rs, err := options.NewDeschedulerServer()
+	if err != nil {
+		t.Fatalf("Unable to initialize server: %v", err)
+	}
+	rs.Client = client
+	rs.EventClient = eventClient
+	rs.DefaultFeatureGates = initFeatureGates()
+	rs.DryRun = true // Set DryRun before creating descheduler
+
+	sharedInformerFactory := informers.NewSharedInformerFactoryWithOptions(rs.Client, 0, informers.WithTransform(trimManagedFields))
+	eventBroadcaster, eventRecorder := utils.GetRecorderAndBroadcaster(ctxCancel, client)
+	defer eventBroadcaster.Shutdown()
+
+	descheduler, err := newDescheduler(ctxCancel, rs, internalDeschedulerPolicy, "v1", eventRecorder, sharedInformerFactory, nil)
+	if err != nil {
+		t.Fatalf("Unable to create a descheduler instance: %v", err)
+	}
+
+	sharedInformerFactory.Start(ctxCancel.Done())
+	sharedInformerFactory.WaitForCacheSync(ctxCancel.Done())
+	if descheduler.fakeSharedInformerFactory != nil {
+		descheduler.fakeSharedInformerFactory.Start(ctxCancel.Done())
+		descheduler.fakeSharedInformerFactory.WaitForCacheSync(ctxCancel.Done())
+	}
+
+	// Set up fake eviction tracking
+	var fakeEvictedPods []string
+	descheduler.fakeClient.PrependReactor("create", "pods", podEvictionReactionTestingFnc(&fakeEvictedPods, nil, nil))
+
+	// First descheduling cycle
 	klog.Infof("2 pod eviction expected per a descheduling cycle, 2 fake evictions in total")
 	if err := descheduler.runDeschedulerLoop(ctx); err != nil {
 		t.Fatalf("Unable to run a descheduling loop: %v", err)
 	}
-	if descheduler.podEvictor.TotalEvicted() != 2 || len(evictedPods) != 0 || len(fakeEvictedPods) != 2 {
-		t.Fatalf("Expected (2,0,2) pods evicted, got (%v, %v, %v) instead", descheduler.podEvictor.TotalEvicted(), len(evictedPods), len(fakeEvictedPods))
+	if descheduler.podEvictor.TotalEvicted() != 2 || len(fakeEvictedPods) != 2 {
+		t.Fatalf("Expected (2,2) pods evicted, got (%v, %v) instead", descheduler.podEvictor.TotalEvicted(), len(fakeEvictedPods))
 	}
 
+	// Second descheduling cycle
 	klog.Infof("2 pod eviction expected per a descheduling cycle, 4 fake evictions in total")
 	if err := descheduler.runDeschedulerLoop(ctx); err != nil {
 		t.Fatalf("Unable to run a descheduling loop: %v", err)
 	}
-	if descheduler.podEvictor.TotalEvicted() != 2 || len(evictedPods) != 0 || len(fakeEvictedPods) != 4 {
-		t.Fatalf("Expected (2,0,4) pods evicted, got (%v, %v, %v) instead", descheduler.podEvictor.TotalEvicted(), len(evictedPods), len(fakeEvictedPods))
+	if descheduler.podEvictor.TotalEvicted() != 2 || len(fakeEvictedPods) != 4 {
+		t.Fatalf("Expected (2,4) pods evicted, got (%v, %v) instead", descheduler.podEvictor.TotalEvicted(), len(fakeEvictedPods))
 	}
+}
+
+func TestEvictedPodRestorationInDryRun(t *testing.T) {
+	// Initialize klog flags
+	klog.InitFlags(nil)
+
+	// Set verbosity level (higher number = more verbose)
+	// 0 = errors only, 1-4 = info, 5-9 = debug, 10+ = trace
+	flag.Set("v", "4")
+
+	initPluginRegistry()
+
+	ctx := context.Background()
+	node1 := test.BuildTestNode("n1", 2000, 3000, 10, taintNodeNoSchedule)
+	node2 := test.BuildTestNode("n2", 2000, 3000, 10, nil)
+
+	ownerRef1 := test.GetReplicaSetOwnerRefList()
+	updatePod := func(pod *v1.Pod) {
+		pod.Namespace = "dev"
+		pod.ObjectMeta.OwnerReferences = ownerRef1
+	}
+
+	p1 := test.BuildTestPod("p1", 100, 0, node1.Name, updatePod)
+
+	internalDeschedulerPolicy := removePodsViolatingNodeTaintsPolicy()
+	ctxCancel, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	// Create descheduler with DryRun mode
+	client := fakeclientset.NewSimpleClientset(node1, node2, p1)
+	eventClient := fakeclientset.NewSimpleClientset(node1, node2, p1)
+
+	rs, err := options.NewDeschedulerServer()
+	if err != nil {
+		t.Fatalf("Unable to initialize server: %v", err)
+	}
+	rs.Client = client
+	rs.EventClient = eventClient
+	rs.DefaultFeatureGates = initFeatureGates()
+	rs.DryRun = true // Set DryRun before creating descheduler
+
+	sharedInformerFactory := informers.NewSharedInformerFactoryWithOptions(rs.Client, 0, informers.WithTransform(trimManagedFields))
+	eventBroadcaster, eventRecorder := utils.GetRecorderAndBroadcaster(ctxCancel, client)
+	defer eventBroadcaster.Shutdown()
+
+	descheduler, err := newDescheduler(ctxCancel, rs, internalDeschedulerPolicy, "v1", eventRecorder, sharedInformerFactory, nil)
+	if err != nil {
+		t.Fatalf("Unable to create a descheduler instance: %v", err)
+	}
+
+	// Verify fakeSharedInformerFactory is set in DryRun mode
+	if descheduler.fakeSharedInformerFactory == nil {
+		t.Fatalf("Expected fakeSharedInformerFactory to be set in DryRun mode, but it is nil")
+	}
+
+	sharedInformerFactory.Start(ctxCancel.Done())
+	sharedInformerFactory.WaitForCacheSync(ctxCancel.Done())
+	descheduler.fakeSharedInformerFactory.Start(ctxCancel.Done())
+	descheduler.fakeSharedInformerFactory.WaitForCacheSync(ctxCancel.Done())
+
+	// Verify the pod exists in the fake client after initialization
+	pod, err := descheduler.fakeClient.CoreV1().Pods(p1.Namespace).Get(ctx, p1.Name, metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("Expected pod %s to exist in fake client after initialization, but got error: %v", p1.Name, err)
+	}
+	if pod.Name != p1.Name {
+		t.Fatalf("Expected pod name %s, got %s", p1.Name, pod.Name)
+	}
+	klog.Infof("Pod %s exists in fake client after initialization", p1.Name)
+
+	// First descheduling cycle - run profiles
+	klog.Infof("Running first descheduling cycle")
+	descheduler.podEvictor.ResetCounters()
+	descheduler.runProfiles(ctx, descheduler.client)
+
+	// Verify the pod was evicted (should not exist in fake client anymore)
+	_, err = descheduler.fakeClient.CoreV1().Pods(p1.Namespace).Get(ctx, p1.Name, metav1.GetOptions{})
+	if err == nil {
+		t.Fatalf("Expected pod %s to be evicted from fake client, but it still exists", p1.Name)
+	}
+	if !apierrors.IsNotFound(err) {
+		t.Fatalf("Expected NotFound error for pod %s, got: %v", p1.Name, err)
+	}
+	klog.Infof("Pod %s was successfully evicted from fake client", p1.Name)
+
+	// Verify the pod was added to the evicted pods cache
+	evictedPods := descheduler.evictedPodsCache.list()
+	if len(evictedPods) != 1 {
+		t.Fatalf("Expected 1 pod in evicted cache, got %d", len(evictedPods))
+	}
+	if evictedPods[0].Namespace != p1.Namespace || evictedPods[0].Name != p1.Name {
+		t.Fatalf("Expected evicted pod %s/%s, got %s/%s", p1.Namespace, p1.Name, evictedPods[0].Namespace, evictedPods[0].Name)
+	}
+	if evictedPods[0].UID != string(p1.UID) {
+		t.Fatalf("Expected evicted pod UID %s, got %s", p1.UID, evictedPods[0].UID)
+	}
+	klog.Infof("Pod %s was successfully added to evicted pods cache (UID: %s)", p1.Name, evictedPods[0].UID)
+
+	// Restore evicted pods
+	klog.Infof("Restoring evicted pods from cache")
+	if err := descheduler.ir.restoreEvictedPods(descheduler.evictedPodsCache); err != nil {
+		t.Fatalf("Failed to restore evicted pods: %v", err)
+	}
+	descheduler.evictedPodsCache.clear()
+
+	// Verify the pod was restored back to the fake client
+	pod, err = descheduler.fakeClient.CoreV1().Pods(p1.Namespace).Get(ctx, p1.Name, metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("Expected pod %s to be restored to fake client, but got error: %v", p1.Name, err)
+	}
+	if pod.Name != p1.Name {
+		t.Fatalf("Expected restored pod name %s, got %s", p1.Name, pod.Name)
+	}
+	if string(pod.UID) != string(p1.UID) {
+		t.Fatalf("Expected restored pod UID %s, got %s", p1.UID, pod.UID)
+	}
+	klog.Infof("Pod %s was successfully restored to fake client (UID: %s)", p1.Name, pod.UID)
+
+	// Verify cache was cleared after restoration
+	evictedPods = descheduler.evictedPodsCache.list()
+	if len(evictedPods) != 0 {
+		t.Fatalf("Expected evicted cache to be empty after restoration, got %d pods", len(evictedPods))
+	}
+	klog.Infof("Evicted pods cache was cleared after restoration")
+
+	// p, e := descheduler.fakeSharedInformerFactory.Core().V1().Pods().Lister().Pods(p1.Namespace).Get(p1.Name)
+	// fmt.Printf("p: %#v, e: %v\n", p, e)
+
+	// Second descheduling cycle - run profiles
+	klog.Infof("Running second descheduling cycle")
+	descheduler.podEvictor.ResetCounters()
+	descheduler.runProfiles(ctx, descheduler.client)
+
+	// Verify the pod was evicted again (should not exist in fake client anymore)
+	_, err = descheduler.fakeClient.CoreV1().Pods(p1.Namespace).Get(ctx, p1.Name, metav1.GetOptions{})
+	if err == nil {
+		t.Fatalf("Expected pod %s to be evicted from fake client in second cycle, but it still exists", p1.Name)
+	}
+	if !apierrors.IsNotFound(err) {
+		t.Fatalf("Expected NotFound error for pod %s in second cycle, got: %v", p1.Name, err)
+	}
+	klog.Infof("Pod %s was successfully evicted from fake client in second cycle", p1.Name)
+
+	// Verify the pod was added to the evicted pods cache again
+	evictedPods = descheduler.evictedPodsCache.list()
+	if len(evictedPods) != 1 {
+		t.Fatalf("Expected 1 pod in evicted cache after second cycle, got %d", len(evictedPods))
+	}
+	if evictedPods[0].Namespace != p1.Namespace || evictedPods[0].Name != p1.Name {
+		t.Fatalf("Expected evicted pod %s/%s in second cycle, got %s/%s", p1.Namespace, p1.Name, evictedPods[0].Namespace, evictedPods[0].Name)
+	}
+	if evictedPods[0].UID != string(p1.UID) {
+		t.Fatalf("Expected evicted pod UID %s in second cycle, got %s", p1.UID, evictedPods[0].UID)
+	}
+	klog.Infof("Pod %s was successfully added to evicted pods cache in second cycle (UID: %s)", p1.Name, evictedPods[0].UID)
+
+	// Restore evicted pods again
+	klog.Infof("Restoring evicted pods from cache after second cycle")
+	if err := descheduler.ir.restoreEvictedPods(descheduler.evictedPodsCache); err != nil {
+		t.Fatalf("Failed to restore evicted pods in second cycle: %v", err)
+	}
+	descheduler.evictedPodsCache.clear()
+
+	// Verify the pod was restored back to the fake client again
+	pod, err = descheduler.fakeClient.CoreV1().Pods(p1.Namespace).Get(ctx, p1.Name, metav1.GetOptions{})
+	if err != nil {
+		t.Fatalf("Expected pod %s to be restored to fake client after second cycle, but got error: %v", p1.Name, err)
+	}
+	if pod.Name != p1.Name {
+		t.Fatalf("Expected restored pod name %s in second cycle, got %s", p1.Name, pod.Name)
+	}
+	if string(pod.UID) != string(p1.UID) {
+		t.Fatalf("Expected restored pod UID %s in second cycle, got %s", p1.UID, pod.UID)
+	}
+	klog.Infof("Pod %s was successfully restored to fake client after second cycle (UID: %s)", p1.Name, pod.UID)
+
+	// Verify cache was cleared after restoration in second cycle
+	evictedPods = descheduler.evictedPodsCache.list()
+	if len(evictedPods) != 0 {
+		t.Fatalf("Expected evicted cache to be empty after second restoration, got %d pods", len(evictedPods))
+	}
+	klog.Infof("Evicted pods cache was cleared after second restoration")
 }
 
 func checkTotals(t *testing.T, ctx context.Context, descheduler *descheduler, totalEvictionRequests, totalEvicted uint) {
@@ -598,7 +827,7 @@ func TestEvictionRequestsCache(t *testing.T) {
 	defer cancel()
 
 	var fakeEvictedPods []string
-	descheduler.podEvictionReactionFnc = func(*fakeclientset.Clientset) func(action core.Action) (bool, runtime.Object, error) {
+	descheduler.podEvictionReactionFnc = func(*fakeclientset.Clientset, *evictedPodsCache) func(action core.Action) (bool, runtime.Object, error) {
 		return podEvictionReactionTestingFnc(&fakeEvictedPods, nil, podEvictionError)
 	}
 
@@ -739,7 +968,7 @@ func TestDeschedulingLimits(t *testing.T) {
 			defer cancel()
 
 			var fakeEvictedPods []string
-			descheduler.podEvictionReactionFnc = func(*fakeclientset.Clientset) func(action core.Action) (bool, runtime.Object, error) {
+			descheduler.podEvictionReactionFnc = func(*fakeclientset.Clientset, *evictedPodsCache) func(action core.Action) (bool, runtime.Object, error) {
 				return podEvictionReactionTestingFnc(&fakeEvictedPods, nil, podEvictionError)
 			}
 
@@ -936,11 +1165,36 @@ func TestNodeLabelSelectorBasedEviction(t *testing.T) {
 			}
 
 			ctxCancel, cancel := context.WithCancel(ctx)
-			rs, deschedulerInstance, client := initDescheduler(t, ctxCancel, initFeatureGates(), policy, nil, node1, node2, node3, node4, p1, p2, p3, p4)
 			defer cancel()
 
-			// Set dry run mode if specified
-			rs.DryRun = tc.dryRun
+			// Create descheduler with DryRun set appropriately
+			client := fakeclientset.NewSimpleClientset(node1, node2, node3, node4, p1, p2, p3, p4)
+			eventClient := fakeclientset.NewSimpleClientset(node1, node2, node3, node4, p1, p2, p3, p4)
+
+			rs, err := options.NewDeschedulerServer()
+			if err != nil {
+				t.Fatalf("Unable to initialize server: %v", err)
+			}
+			rs.Client = client
+			rs.EventClient = eventClient
+			rs.DefaultFeatureGates = initFeatureGates()
+			rs.DryRun = tc.dryRun // Set DryRun before creating descheduler
+
+			sharedInformerFactory := informers.NewSharedInformerFactoryWithOptions(rs.Client, 0, informers.WithTransform(trimManagedFields))
+			eventBroadcaster, eventRecorder := utils.GetRecorderAndBroadcaster(ctxCancel, client)
+			defer eventBroadcaster.Shutdown()
+
+			deschedulerInstance, err := newDescheduler(ctxCancel, rs, policy, "v1", eventRecorder, sharedInformerFactory, nil)
+			if err != nil {
+				t.Fatalf("Unable to create a descheduler instance: %v", err)
+			}
+
+			sharedInformerFactory.Start(ctxCancel.Done())
+			sharedInformerFactory.WaitForCacheSync(ctxCancel.Done())
+			if deschedulerInstance.fakeSharedInformerFactory != nil {
+				deschedulerInstance.fakeSharedInformerFactory.Start(ctxCancel.Done())
+				deschedulerInstance.fakeSharedInformerFactory.WaitForCacheSync(ctxCancel.Done())
+			}
 
 			// Verify all pods are created initially
 			pods, err := client.CoreV1().Pods(p1.Namespace).List(ctx, metav1.ListOptions{})
@@ -955,9 +1209,10 @@ func TestNodeLabelSelectorBasedEviction(t *testing.T) {
 			if !tc.dryRun {
 				client.PrependReactor("create", "pods", podEvictionReactionTestingFnc(&evictedPods, nil, nil))
 			} else {
-				deschedulerInstance.podEvictionReactionFnc = func(*fakeclientset.Clientset) func(action core.Action) (bool, runtime.Object, error) {
+				deschedulerInstance.podEvictionReactionFnc = func(*fakeclientset.Clientset, *evictedPodsCache) func(action core.Action) (bool, runtime.Object, error) {
 					return podEvictionReactionTestingFnc(&evictedPods, nil, nil)
 				}
+				deschedulerInstance.fakeClient.PrependReactor("create", "pods", deschedulerInstance.podEvictionReactionFnc(deschedulerInstance.fakeClient, deschedulerInstance.evictedPodsCache))
 			}
 
 			// Run descheduler
@@ -1079,4 +1334,185 @@ func TestLoadAwareDescheduling(t *testing.T) {
 		t.Fatalf("Expected %v evictions in total, got %v instead", 2, totalEs)
 	}
 	t.Logf("Total evictions: %v", totalEs)
+}
+
+func TestInformerResourcesRestoreEvictedPods(t *testing.T) {
+	testCases := []struct {
+		name               string
+		setupPods          func(node *v1.Node) []*v1.Pod
+		setupCache         func(pods []*v1.Pod) *evictedPodsCache
+		podToDelete        string
+		expectRestored     bool
+		expectedPodsInFake int
+	}{
+		{
+			name: "successfully restore evicted pod",
+			setupPods: func(node *v1.Node) []*v1.Pod {
+				ownerRef1 := test.GetReplicaSetOwnerRefList()
+				updatePod := func(pod *v1.Pod) {
+					pod.Namespace = "default"
+					pod.ObjectMeta.OwnerReferences = ownerRef1
+				}
+				p1 := test.BuildTestPod("p1", 100, 0, node.Name, updatePod)
+				p2 := test.BuildTestPod("p2", 100, 0, node.Name, updatePod)
+				return []*v1.Pod{p1, p2}
+			},
+			setupCache: func(pods []*v1.Pod) *evictedPodsCache {
+				cache := newEvictedPodsCache()
+				cache.add(pods[0]) // Add p1
+				return cache
+			},
+			podToDelete:        "p1",
+			expectRestored:     true,
+			expectedPodsInFake: 2, // p1 restored, p2 still there
+		},
+		{
+			name: "skip restoration due to UID mismatch",
+			setupPods: func(node *v1.Node) []*v1.Pod {
+				ownerRef1 := test.GetReplicaSetOwnerRefList()
+				updatePod := func(pod *v1.Pod) {
+					pod.Namespace = "default"
+					pod.ObjectMeta.OwnerReferences = ownerRef1
+				}
+				p1 := test.BuildTestPod("p1", 100, 0, node.Name, updatePod)
+				return []*v1.Pod{p1}
+			},
+			setupCache: func(pods []*v1.Pod) *evictedPodsCache {
+				cache := newEvictedPodsCache()
+				// Add pod with wrong UID
+				wrongUID := "wrong-uid-12345"
+				cache.pods[wrongUID] = &evictedPodInfo{
+					Namespace: pods[0].Namespace,
+					Name:      pods[0].Name,
+					UID:       wrongUID,
+				}
+				return cache
+			},
+			podToDelete:        "p1",
+			expectRestored:     false,
+			expectedPodsInFake: 0, // p1 not restored due to UID mismatch
+		},
+		{
+			name: "skip restoration when pod not in real client",
+			setupPods: func(node *v1.Node) []*v1.Pod {
+				return []*v1.Pod{} // No pods in real client
+			},
+			setupCache: func(pods []*v1.Pod) *evictedPodsCache {
+				cache := newEvictedPodsCache()
+				// Add pod that doesn't exist in real client
+				cache.pods["missing-pod-uid"] = &evictedPodInfo{
+					Namespace: "default",
+					Name:      "missing-pod",
+					UID:       "missing-pod-uid",
+				}
+				return cache
+			},
+			podToDelete:        "", // No pod to delete
+			expectRestored:     false,
+			expectedPodsInFake: 0, // No pods
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+
+			// Create test node
+			node1 := test.BuildTestNode("n1", 2000, 3000, 10, nil)
+
+			// Setup pods
+			pods := tc.setupPods(node1)
+
+			// Create real client with the pods
+			objects := []runtime.Object{node1}
+			for _, pod := range pods {
+				objects = append(objects, pod)
+			}
+			realClient := fakeclientset.NewSimpleClientset(objects...)
+			realInformerFactory := informers.NewSharedInformerFactory(realClient, 0)
+
+			// Create fake client
+			fakeClient := fakeclientset.NewSimpleClientset()
+			fakeInformerFactory := informers.NewSharedInformerFactory(fakeClient, 0)
+
+			// Create informerResources
+			ir := newInformerResources(realInformerFactory, fakeClient, fakeInformerFactory)
+
+			// Register pods resource
+			err := ir.uses(v1.SchemeGroupVersion.WithResource("pods"))
+			if err != nil {
+				t.Fatalf("Failed to register pods resource: %v", err)
+			}
+
+			// Start informers - this will trigger event handlers which sync the initial state
+			realInformerFactory.Start(ctx.Done())
+			realInformerFactory.WaitForCacheSync(ctx.Done())
+
+			fakeInformerFactory.Start(ctx.Done())
+			fakeInformerFactory.WaitForCacheSync(ctx.Done())
+
+			// Setup evicted cache
+			evictedCache := tc.setupCache(pods)
+
+			// Delete pod from fake client if specified
+			if tc.podToDelete != "" {
+				err = fakeClient.CoreV1().Pods("default").Delete(ctx, tc.podToDelete, metav1.DeleteOptions{})
+				if err != nil {
+					t.Fatalf("Failed to delete pod from fake client: %v", err)
+				}
+
+				// Verify pod is deleted
+				_, err = fakeClient.CoreV1().Pods("default").Get(ctx, tc.podToDelete, metav1.GetOptions{})
+				if err == nil {
+					t.Fatalf("Expected pod %s to be deleted from fake client", tc.podToDelete)
+				}
+				if !apierrors.IsNotFound(err) {
+					t.Fatalf("Expected NotFound error, got: %v", err)
+				}
+			}
+
+			// Restore evicted pods
+			err = ir.restoreEvictedPods(evictedCache)
+			if err != nil {
+				t.Fatalf("Failed to restore evicted pods: %v", err)
+			}
+			evictedCache.clear()
+
+			// Verify restoration result
+			if tc.expectRestored {
+				restoredPod, err := fakeClient.CoreV1().Pods("default").Get(ctx, tc.podToDelete, metav1.GetOptions{})
+				if err != nil {
+					t.Fatalf("Expected pod %s to be restored to fake client, got error: %v", tc.podToDelete, err)
+				}
+				if restoredPod.Name != tc.podToDelete {
+					t.Fatalf("Expected restored pod name %s, got %s", tc.podToDelete, restoredPod.Name)
+				}
+				t.Logf("Successfully restored pod %s with UID %s", restoredPod.Name, restoredPod.UID)
+			} else if tc.podToDelete != "" {
+				_, err := fakeClient.CoreV1().Pods("default").Get(ctx, tc.podToDelete, metav1.GetOptions{})
+				if err == nil {
+					t.Fatalf("Expected pod %s to NOT be restored", tc.podToDelete)
+				}
+				if !apierrors.IsNotFound(err) {
+					t.Fatalf("Expected NotFound error, got: %v", err)
+				}
+				t.Logf("Successfully skipped restoration for pod %s", tc.podToDelete)
+			}
+
+			// Verify expected number of pods in fake client
+			podsList, err := fakeClient.CoreV1().Pods("default").List(ctx, metav1.ListOptions{})
+			if err != nil {
+				t.Fatalf("Failed to list pods from fake client: %v", err)
+			}
+			if len(podsList.Items) != tc.expectedPodsInFake {
+				t.Fatalf("Expected %d pods in fake client, got %d", tc.expectedPodsInFake, len(podsList.Items))
+			}
+
+			// Verify cache is cleared
+			cachedPods := evictedCache.list()
+			if len(cachedPods) != 0 {
+				t.Fatalf("Expected evicted cache to be empty, got %d pods", len(cachedPods))
+			}
+		})
+	}
 }
