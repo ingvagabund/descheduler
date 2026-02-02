@@ -574,6 +574,9 @@ func prometheusProvider2authTokenConfig(prometheusProvider *api.MetricsProvider)
 }
 
 func RunDeschedulerStrategies(ctx context.Context, rs *options.DeschedulerServer, deschedulerPolicy *api.DeschedulerPolicy, evictionPolicyGroupVersion string) error {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
 	var span trace.Span
 	ctx, span = tracing.Tracer().Start(ctx, "RunDeschedulerStrategies")
 	defer span.End()
@@ -602,8 +605,6 @@ func RunDeschedulerStrategies(ctx context.Context, rs *options.DeschedulerServer
 		span.AddEvent("Failed to create new descheduler", trace.WithAttributes(attribute.String("err", err.Error())))
 		return err
 	}
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
 
 	// Setup Prometheus provider (only for real client case, not for dry run)
 	if err := setupPrometheusProvider(descheduler, namespacedSharedInformerFactory); err != nil {
