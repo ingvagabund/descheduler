@@ -547,6 +547,32 @@ const (
 	secretReconciliation
 )
 
+// authtokenConfig stores authorization token's source
+// and prometheus configuration for producing a prom client
+type authtokenConfig struct {
+	source tokenReconciliation
+	config *api.Prometheus
+}
+
+// prometheusProvider2authTokenConfig assumes the provider data are valid
+func prometheusProvider2authTokenConfig(prometheusProvider *api.MetricsProvider) *authtokenConfig {
+	if prometheusProvider == nil || prometheusProvider.Prometheus == nil || prometheusProvider.Prometheus.URL == "" {
+		return &authtokenConfig{
+			source: noReconciliation,
+		}
+	}
+	if prometheusProvider.Prometheus.AuthToken != nil {
+		return &authtokenConfig{
+			source: secretReconciliation,
+			config: prometheusProvider.Prometheus,
+		}
+	}
+	return &authtokenConfig{
+		source: inClusterReconciliation,
+		config: prometheusProvider.Prometheus,
+	}
+}
+
 func RunDeschedulerStrategies(ctx context.Context, rs *options.DeschedulerServer, deschedulerPolicy *api.DeschedulerPolicy, evictionPolicyGroupVersion string) error {
 	var span trace.Span
 	ctx, span = tracing.Tracer().Start(ctx, "RunDeschedulerStrategies")
@@ -563,19 +589,11 @@ func RunDeschedulerStrategies(ctx context.Context, rs *options.DeschedulerServer
 	eventBroadcaster, eventRecorder := utils.GetRecorderAndBroadcaster(ctx, eventClient)
 	defer eventBroadcaster.Shutdown()
 
-	var namespacedSharedInformerFactory informers.SharedInformerFactory
-	metricProviderTokenReconciliation := noReconciliation
+	aTConfig := prometheusProvider2authTokenConfig(metricsProviderListToMap(deschedulerPolicy.MetricsProviders)[api.PrometheusMetrics])
 
-	prometheusProvider := metricsProviderListToMap(deschedulerPolicy.MetricsProviders)[api.PrometheusMetrics]
-	if prometheusProvider != nil && prometheusProvider.Prometheus != nil && prometheusProvider.Prometheus.URL != "" {
-		if prometheusProvider.Prometheus.AuthToken != nil {
-			// Will get reconciled
-			namespacedSharedInformerFactory = informers.NewSharedInformerFactoryWithOptions(rs.Client, 0, informers.WithTransform(trimManagedFields), informers.WithNamespace(prometheusProvider.Prometheus.AuthToken.SecretReference.Namespace))
-			metricProviderTokenReconciliation = secretReconciliation
-		} else {
-			// Use the sa token and assume it has the sufficient permissions to authenticate
-			metricProviderTokenReconciliation = inClusterReconciliation
-		}
+	var namespacedSharedInformerFactory informers.SharedInformerFactory
+	if aTConfig.source == secretReconciliation {
+		namespacedSharedInformerFactory = informers.NewSharedInformerFactoryWithOptions(rs.Client, 0, informers.WithTransform(trimManagedFields), informers.WithNamespace(aTConfig.config.AuthToken.SecretReference.Namespace))
 	}
 
 	// Always create descheduler with real client/factory first to register all informers
@@ -622,12 +640,12 @@ func RunDeschedulerStrategies(ctx context.Context, rs *options.DeschedulerServer
 		descheduler.kubeClientSandbox.fakeSharedInformerFactory().WaitForCacheSync(ctx.Done())
 	}
 	sharedInformerFactory.Start(ctx.Done())
-	if metricProviderTokenReconciliation == secretReconciliation {
+	if aTConfig.source == secretReconciliation {
 		namespacedSharedInformerFactory.Start(ctx.Done())
 	}
 
 	sharedInformerFactory.WaitForCacheSync(ctx.Done())
-	if metricProviderTokenReconciliation == secretReconciliation {
+	if aTConfig.source == secretReconciliation {
 		namespacedSharedInformerFactory.WaitForCacheSync(ctx.Done())
 	}
 
@@ -647,12 +665,12 @@ func RunDeschedulerStrategies(ctx context.Context, rs *options.DeschedulerServer
 		}
 	}
 
-	if metricProviderTokenReconciliation == secretReconciliation {
+	if aTConfig.source == secretReconciliation {
 		go descheduler.promClientCtrl.runAuthenticationSecretReconciler(ctx)
 	}
 
 	wait.NonSlidingUntil(func() {
-		if metricProviderTokenReconciliation == inClusterReconciliation {
+		if aTConfig.source == inClusterReconciliation {
 			// Read the sa token and assume it has the sufficient permissions to authenticate
 			if err := descheduler.promClientCtrl.reconcileInClusterSAToken(); err != nil {
 				klog.ErrorS(err, "unable to reconcile an in cluster SA token")
