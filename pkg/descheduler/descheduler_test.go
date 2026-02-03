@@ -202,7 +202,7 @@ func lowNodeUtilizationPolicy(thresholds, targetThresholds api.ResourceThreshold
 	}
 }
 
-func initDescheduler(t *testing.T, ctx context.Context, featureGates featuregate.FeatureGate, internalDeschedulerPolicy *api.DeschedulerPolicy, source tokenReconciliation, metricsClient metricsclient.Interface, dryRun bool, objects ...runtime.Object) (*options.DeschedulerServer, *descheduler, *fakeclientset.Clientset) {
+func initDescheduler(t *testing.T, ctx context.Context, featureGates featuregate.FeatureGate, internalDeschedulerPolicy *api.DeschedulerPolicy, source tokenReconciliation, metricsClient metricsclient.Interface, dryRun bool, objects ...runtime.Object) (*options.DeschedulerServer, *descheduler, func(context.Context) error, *fakeclientset.Clientset) {
 	client := fakeclientset.NewSimpleClientset(objects...)
 	eventClient := fakeclientset.NewSimpleClientset(objects...)
 
@@ -231,7 +231,7 @@ func initDescheduler(t *testing.T, ctx context.Context, featureGates featuregate
 		namespacedSharedInformerFactory = informers.NewSharedInformerFactoryWithOptions(client, 0, informers.WithNamespace(namespace))
 	}
 
-	descheduler, err := bootstrapDescheduler(ctx, rs, internalDeschedulerPolicy, "v1", aTConfig, sharedInformerFactory, namespacedSharedInformerFactory, eventRecorder)
+	descheduler, runFnc, err := bootstrapDescheduler(ctx, rs, internalDeschedulerPolicy, "v1", aTConfig, sharedInformerFactory, namespacedSharedInformerFactory, eventRecorder)
 	if err != nil {
 		eventBroadcaster.Shutdown()
 		t.Fatalf("Failed to bootstrap a descheduler: %v", err)
@@ -261,7 +261,7 @@ func initDescheduler(t *testing.T, ctx context.Context, featureGates featuregate
 		}
 	}
 
-	return rs, descheduler, client
+	return rs, descheduler, runFnc, client
 }
 
 func TestTaintsUpdated(t *testing.T) {
@@ -582,7 +582,7 @@ func TestPodEvictorReset(t *testing.T) {
 
 			internalDeschedulerPolicy := removePodsViolatingNodeTaintsPolicy()
 			ctxCancel, cancel := context.WithCancel(ctx)
-			_, descheduler, client := initDescheduler(t, ctxCancel, initFeatureGates(), internalDeschedulerPolicy, noReconciliation, nil, tc.dryRun, node1, node2, p1, p2)
+			_, descheduler, _, client := initDescheduler(t, ctxCancel, initFeatureGates(), internalDeschedulerPolicy, noReconciliation, nil, tc.dryRun, node1, node2, p1, p2)
 			defer cancel()
 
 			var evictedPods []string
@@ -675,7 +675,7 @@ func TestEvictionRequestsCache(t *testing.T) {
 	featureGates.Add(map[featuregate.Feature]featuregate.FeatureSpec{
 		features.EvictionsInBackground: {Default: true, PreRelease: featuregate.Alpha},
 	})
-	_, descheduler, client := initDescheduler(t, ctxCancel, featureGates, internalDeschedulerPolicy, noReconciliation, nil, false, node1, node2, p1, p2, p3, p4)
+	_, descheduler, _, client := initDescheduler(t, ctxCancel, featureGates, internalDeschedulerPolicy, noReconciliation, nil, false, node1, node2, p1, p2, p3, p4)
 	defer cancel()
 
 	var evictedPods []string
@@ -811,7 +811,7 @@ func TestDeschedulingLimits(t *testing.T) {
 			featureGates.Add(map[featuregate.Feature]featuregate.FeatureSpec{
 				features.EvictionsInBackground: {Default: true, PreRelease: featuregate.Alpha},
 			})
-			_, descheduler, client := initDescheduler(t, ctxCancel, featureGates, tc.policy, noReconciliation, nil, false, node1, node2)
+			_, descheduler, _, client := initDescheduler(t, ctxCancel, featureGates, tc.policy, noReconciliation, nil, false, node1, node2)
 			defer cancel()
 
 			var evictedPods []string
@@ -1009,7 +1009,7 @@ func TestNodeLabelSelectorBasedEviction(t *testing.T) {
 			}
 
 			ctxCancel, cancel := context.WithCancel(ctx)
-			_, deschedulerInstance, client := initDescheduler(t, ctxCancel, initFeatureGates(), policy, noReconciliation, nil, tc.dryRun, objects...)
+			_, deschedulerInstance, _, client := initDescheduler(t, ctxCancel, initFeatureGates(), policy, noReconciliation, nil, tc.dryRun, objects...)
 			defer cancel()
 
 			// Verify all pods are created initially
@@ -1123,7 +1123,7 @@ func TestLoadAwareDescheduling(t *testing.T) {
 	policy.MetricsProviders = []api.MetricsProvider{{Source: api.KubernetesMetrics}}
 
 	ctxCancel, cancel := context.WithCancel(ctx)
-	_, descheduler, _ := initDescheduler(
+	_, descheduler, _, _ := initDescheduler(
 		t,
 		ctxCancel,
 		initFeatureGates(),
@@ -1506,7 +1506,7 @@ func TestPluginPrometheusClientAccess(t *testing.T) {
 			node1 := test.BuildTestNode("node1", 1000, 2000, 9, nil)
 			node2 := test.BuildTestNode("node2", 1000, 2000, 9, nil)
 
-			_, descheduler, _ := initDescheduler(t, ctx, initFeatureGates(), deschedulerPolicy, inClusterReconciliation, nil, tc.dryRun, node1, node2)
+			_, descheduler, runFnc, _ := initDescheduler(t, ctx, initFeatureGates(), deschedulerPolicy, inClusterReconciliation, nil, tc.dryRun, node1, node2)
 
 			// Test cycles with different Prometheus client values
 			cycles := []struct {
@@ -1552,18 +1552,16 @@ func TestPluginPrometheusClientAccess(t *testing.T) {
 					return &rest.Config{BearerToken: cycle.token}, nil
 				}
 
-				// Use reconcileInClusterSAToken to set the client
-				t.Logf("Setting descheduler.promClientCtrl.promClient from %v to %v", descheduler.promClientCtrl.promClient, cycle.client)
-				if err := descheduler.promClientCtrl.reconcileInClusterSAToken(); err != nil {
-					t.Fatalf("Failed to reconcile in-cluster SA token: %v", err)
-				}
-
 				newInvoked = false
 				reactorInvoked = false
 				prometheusClientFromPluginNewHandle = nil
 				prometheusClientFromReactor = nil
 
-				descheduler.runProfiles(ctx)
+				// Use reconcileInClusterSAToken to set the client
+				t.Logf("Setting descheduler.promClientCtrl.promClient from %v to %v", descheduler.promClientCtrl.promClient, cycle.client)
+				if err := runFnc(ctx); err != nil {
+					t.Fatalf("Failed to reconcile in-cluster SA token: %v", err)
+				}
 
 				t.Logf("After cycle %d: prometheusClientFromReactor=%v, descheduler.promClientCtrl.promClient=%v", i+1, prometheusClientFromReactor, descheduler.promClientCtrl.promClient)
 
@@ -1813,7 +1811,7 @@ func TestPromClientControllerSync_ClientCreation(t *testing.T) {
 							},
 						}
 
-						_, descheduler, _ := initDescheduler(t, ctx, initFeatureGates(), deschedulerPolicy, secretReconciliation, nil, false, objects...)
+						_, descheduler, _, _ := initDescheduler(t, ctx, initFeatureGates(), deschedulerPolicy, secretReconciliation, nil, false, objects...)
 						return descheduler.promClientCtrl
 					},
 				},
@@ -1984,7 +1982,7 @@ func TestPromClientControllerSync_EventHandler(t *testing.T) {
 					},
 				}
 
-				_, descheduler, client := initDescheduler(t, ctx, initFeatureGates(), deschedulerPolicy, secretReconciliation, nil, false)
+				_, descheduler, _, client := initDescheduler(t, ctx, initFeatureGates(), deschedulerPolicy, secretReconciliation, nil, false)
 				// The reconciler is already started by initDescheduler via bootstrapDescheduler
 
 				return descheduler.promClientCtrl, client, prometheusConfig.AuthToken.SecretReference.Namespace
@@ -2233,7 +2231,7 @@ func TestReconcileInClusterSAToken(t *testing.T) {
 							},
 						}
 
-						_, descheduler, _ := initDescheduler(t, ctx, initFeatureGates(), deschedulerPolicy, inClusterReconciliation, nil, false)
+						_, descheduler, _, _ := initDescheduler(t, ctx, initFeatureGates(), deschedulerPolicy, inClusterReconciliation, nil, false)
 
 						// Override the fields needed for this test
 						descheduler.promClientCtrl.currentPrometheusAuthToken = tc.currentAuthToken
