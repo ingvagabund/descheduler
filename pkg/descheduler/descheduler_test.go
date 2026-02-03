@@ -1870,10 +1870,7 @@ func TestPromClientControllerSync_EventHandler(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	prometheusConfig := newPrometheusConfig()
-	secretName := prometheusConfig.AuthToken.SecretReference.Name
-
-	setup := setupPromClientControllerTest(nil, prometheusConfig)
+	setup := setupPromClientControllerTest(nil, newPrometheusConfig())
 	defer close(setup.stopCh)
 
 	// Track created clients to verify different instances
@@ -1938,7 +1935,8 @@ func TestPromClientControllerSync_EventHandler(t *testing.T) {
 		{
 			name: "delete secret",
 			operation: func() error {
-				return setup.fakeClient.CoreV1().Secrets(setup.namespace).Delete(ctx, secretName, metav1.DeleteOptions{})
+				secret := newPrometheusAuthSecret(withToken("token-2"))
+				return setup.fakeClient.CoreV1().Secrets(setup.namespace).Delete(ctx, secret.Name, metav1.DeleteOptions{})
 			},
 			processItem:                      true,
 			expectedPromClientSet:            false,
