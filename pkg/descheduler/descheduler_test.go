@@ -1865,28 +1865,11 @@ func TestPromClientControllerSync_ClientCreation(t *testing.T) {
 }
 
 func TestPromClientControllerSync_EventHandler(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	setup := setupPromClientControllerTest(ctx, nil, newPrometheusConfig())
-
-	// Track created clients to verify different instances
-	var createdClients []promapi.Client
-	var createdClientsMu sync.Mutex
-	setup.ctrl.createPrometheusClient = func(url, token string) (promapi.Client, *http.Transport, error) {
-		client := &mockPrometheusClient{name: "client-" + token}
-		createdClientsMu.Lock()
-		createdClients = append(createdClients, client)
-		createdClientsMu.Unlock()
-		return client, &http.Transport{}, nil
-	}
-
-	// Start the reconciler to process queue items
-	go setup.ctrl.runAuthenticationSecretReconciler(ctx)
+	prometheusConfig := newPrometheusConfig()
 
 	testCases := []struct {
 		name                             string
-		operation                        func() error
+		operation                        func(ctx context.Context, fakeClient *fakeclientset.Clientset, namespace string) error
 		processItem                      bool
 		expectedPromClientSet            bool
 		expectedCreatedClientsCount      int
@@ -1897,7 +1880,7 @@ func TestPromClientControllerSync_EventHandler(t *testing.T) {
 		// Check initial conditions
 		{
 			name:                        "no secret initially",
-			operation:                   func() error { return nil },
+			operation:                   func(ctx context.Context, fakeClient *fakeclientset.Clientset, namespace string) error { return nil },
 			processItem:                 false,
 			expectedPromClientSet:       false,
 			expectedCreatedClientsCount: 0,
@@ -1906,9 +1889,9 @@ func TestPromClientControllerSync_EventHandler(t *testing.T) {
 		// Change conditions
 		{
 			name: "add secret",
-			operation: func() error {
+			operation: func(ctx context.Context, fakeClient *fakeclientset.Clientset, namespace string) error {
 				secret := newPrometheusAuthSecret(withToken("token-1"))
-				_, err := setup.fakeClient.CoreV1().Secrets(setup.namespace).Create(ctx, secret, metav1.CreateOptions{})
+				_, err := fakeClient.CoreV1().Secrets(namespace).Create(ctx, secret, metav1.CreateOptions{})
 				return err
 			},
 			processItem:                 true,
@@ -1918,9 +1901,9 @@ func TestPromClientControllerSync_EventHandler(t *testing.T) {
 		},
 		{
 			name: "update secret",
-			operation: func() error {
+			operation: func(ctx context.Context, fakeClient *fakeclientset.Clientset, namespace string) error {
 				secret := newPrometheusAuthSecret(withToken("token-2"))
-				_, err := setup.fakeClient.CoreV1().Secrets(setup.namespace).Update(ctx, secret, metav1.UpdateOptions{})
+				_, err := fakeClient.CoreV1().Secrets(namespace).Update(ctx, secret, metav1.UpdateOptions{})
 				return err
 			},
 			processItem:                 true,
@@ -1931,9 +1914,9 @@ func TestPromClientControllerSync_EventHandler(t *testing.T) {
 		},
 		{
 			name: "delete secret",
-			operation: func() error {
+			operation: func(ctx context.Context, fakeClient *fakeclientset.Clientset, namespace string) error {
 				secret := newPrometheusAuthSecret(withToken("token-2"))
-				return setup.fakeClient.CoreV1().Secrets(setup.namespace).Delete(ctx, secret.Name, metav1.DeleteOptions{})
+				return fakeClient.CoreV1().Secrets(namespace).Delete(ctx, secret.Name, metav1.DeleteOptions{})
 			},
 			processItem:                      true,
 			expectedPromClientSet:            false,
@@ -1943,23 +1926,113 @@ func TestPromClientControllerSync_EventHandler(t *testing.T) {
 		},
 	}
 
-	for _, tc := range testCases {
-		t.Run(tc.name, func(t *testing.T) {
-			if err := tc.operation(); err != nil {
-				t.Fatalf("Failed to execute operation: %v", err)
+	for _, setupMode := range []struct {
+		name string
+		init func(t *testing.T, ctx context.Context) (ctrl *promClientController, fakeClient *fakeclientset.Clientset, namespace string)
+	}{
+		{
+			name: "running with prom reconciler directly",
+			init: func(t *testing.T, ctx context.Context) (ctrl *promClientController, fakeClient *fakeclientset.Clientset, namespace string) {
+				setup := setupPromClientControllerTest(ctx, nil, prometheusConfig)
+
+				// Start the reconciler to process queue items
+				go setup.ctrl.runAuthenticationSecretReconciler(ctx)
+
+				return setup.ctrl, setup.fakeClient, setup.namespace
+			},
+		},
+		{
+			name: "running with full descheduler",
+			init: func(t *testing.T, ctx context.Context) (ctrl *promClientController, fakeClient *fakeclientset.Clientset, namespace string) {
+				deschedulerPolicy := &api.DeschedulerPolicy{
+					MetricsProviders: []api.MetricsProvider{
+						{
+							Source:     api.PrometheusMetrics,
+							Prometheus: prometheusConfig,
+						},
+					},
+				}
+
+				_, descheduler, client := initDescheduler(t, ctx, initFeatureGates(), deschedulerPolicy, nil, false)
+				// The reconciler is already started by initDescheduler via bootstrapDescheduler
+
+				return descheduler.promClientCtrl, client, prometheusConfig.AuthToken.SecretReference.Namespace
+			},
+		},
+	} {
+		t.Run(setupMode.name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+
+			ctrl, fakeClient, namespace := setupMode.init(t, ctx)
+
+			// Track created clients to verify different instances
+			var createdClients []promapi.Client
+			var createdClientsMu sync.Mutex
+			ctrl.createPrometheusClient = func(url, token string) (promapi.Client, *http.Transport, error) {
+				client := &mockPrometheusClient{name: "client-" + token}
+				createdClientsMu.Lock()
+				createdClients = append(createdClients, client)
+				createdClientsMu.Unlock()
+				return client, &http.Transport{}, nil
 			}
 
-			if tc.processItem {
-				// Wait for event to be processed by the reconciler
-				err := wait.PollUntilContextTimeout(ctx, 10*time.Millisecond, 2*time.Second, true, func(ctx context.Context) (bool, error) {
-					// Check if all expected conditions are met
+			for _, tc := range testCases {
+				t.Run(tc.name, func(t *testing.T) {
+					if err := tc.operation(ctx, fakeClient, namespace); err != nil {
+						t.Fatalf("Failed to execute operation: %v", err)
+					}
+
+					if tc.processItem {
+						// Wait for event to be processed by the reconciler
+						err := wait.PollUntilContextTimeout(ctx, 10*time.Millisecond, 2*time.Second, true, func(ctx context.Context) (bool, error) {
+							// Check if all expected conditions are met
+							if tc.expectedPromClientSet {
+								if ctrl.promClient == nil {
+									return false, nil
+								}
+							} else {
+								if ctrl.promClient != nil {
+									return false, nil
+								}
+							}
+
+							createdClientsMu.Lock()
+							createdClientsLen := len(createdClients)
+							createdClientsMu.Unlock()
+							if createdClientsLen != tc.expectedCreatedClientsCount {
+								return false, nil
+							}
+
+							if ctrl.currentPrometheusAuthToken != tc.expectedCurrentToken {
+								return false, nil
+							}
+
+							if tc.expectedPreviousTransportCleared {
+								if ctrl.previousPrometheusClientTransport != nil {
+									return false, nil
+								}
+							}
+
+							return true, nil
+						})
+						if err != nil {
+							t.Fatalf("Timed out waiting for expected conditions: %v", err)
+						}
+
+						// Log all expected conditions that were met
+						t.Logf("All expected conditions met: promClientSet=%v, createdClientsCount=%d, currentToken=%q, previousTransportCleared=%v",
+							tc.expectedPromClientSet, tc.expectedCreatedClientsCount, tc.expectedCurrentToken, tc.expectedPreviousTransportCleared)
+					}
+
+					// Validate post-conditions
 					if tc.expectedPromClientSet {
-						if setup.ctrl.promClient == nil {
-							return false, nil
+						if ctrl.promClient == nil {
+							t.Error("Expected prometheus client to be set, but it was nil")
 						}
 					} else {
-						if setup.ctrl.promClient != nil {
-							return false, nil
+						if ctrl.promClient != nil {
+							t.Errorf("Expected prometheus client to be nil, but got: %v", ctrl.promClient)
 						}
 					}
 
@@ -1967,64 +2040,27 @@ func TestPromClientControllerSync_EventHandler(t *testing.T) {
 					createdClientsLen := len(createdClients)
 					createdClientsMu.Unlock()
 					if createdClientsLen != tc.expectedCreatedClientsCount {
-						return false, nil
+						t.Errorf("Expected %d clients created, but got %d", tc.expectedCreatedClientsCount, len(createdClients))
 					}
 
-					if setup.ctrl.currentPrometheusAuthToken != tc.expectedCurrentToken {
-						return false, nil
+					if ctrl.currentPrometheusAuthToken != tc.expectedCurrentToken {
+						t.Errorf("Expected current token to be %q, got %q", tc.expectedCurrentToken, ctrl.currentPrometheusAuthToken)
 					}
 
 					if tc.expectedPreviousTransportCleared {
-						if setup.ctrl.previousPrometheusClientTransport != nil {
-							return false, nil
+						if ctrl.previousPrometheusClientTransport != nil {
+							t.Error("Expected previous transport to be cleared, but it was set")
 						}
 					}
 
-					return true, nil
+					if tc.expectDifferentClients && len(createdClients) >= 2 {
+						createdClientsMu.Lock()
+						defer createdClientsMu.Unlock()
+						if createdClients[0] == createdClients[1] {
+							t.Error("Expected different client instances")
+						}
+					}
 				})
-				if err != nil {
-					t.Fatalf("Timed out waiting for expected conditions: %v", err)
-				}
-
-				// Log all expected conditions that were met
-				t.Logf("All expected conditions met: promClientSet=%v, createdClientsCount=%d, currentToken=%q, previousTransportCleared=%v",
-					tc.expectedPromClientSet, tc.expectedCreatedClientsCount, tc.expectedCurrentToken, tc.expectedPreviousTransportCleared)
-			}
-
-			// Validate post-conditions
-			if tc.expectedPromClientSet {
-				if setup.ctrl.promClient == nil {
-					t.Error("Expected prometheus client to be set, but it was nil")
-				}
-			} else {
-				if setup.ctrl.promClient != nil {
-					t.Errorf("Expected prometheus client to be nil, but got: %v", setup.ctrl.promClient)
-				}
-			}
-
-			createdClientsMu.Lock()
-			createdClientsLen := len(createdClients)
-			createdClientsMu.Unlock()
-			if createdClientsLen != tc.expectedCreatedClientsCount {
-				t.Errorf("Expected %d clients created, but got %d", tc.expectedCreatedClientsCount, len(createdClients))
-			}
-
-			if setup.ctrl.currentPrometheusAuthToken != tc.expectedCurrentToken {
-				t.Errorf("Expected current token to be %q, got %q", tc.expectedCurrentToken, setup.ctrl.currentPrometheusAuthToken)
-			}
-
-			if tc.expectedPreviousTransportCleared {
-				if setup.ctrl.previousPrometheusClientTransport != nil {
-					t.Error("Expected previous transport to be cleared, but it was set")
-				}
-			}
-
-			if tc.expectDifferentClients && len(createdClients) >= 2 {
-				createdClientsMu.Lock()
-				defer createdClientsMu.Unlock()
-				if createdClients[0] == createdClients[1] {
-					t.Error("Expected different client instances")
-				}
 			}
 		})
 	}
