@@ -2165,88 +2165,127 @@ func TestReconcileInClusterSAToken(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			ctrl := &promClientController{
-				currentPrometheusAuthToken: tc.currentAuthToken,
-				metricsProviders: map[api.MetricsSource]*api.MetricsProvider{
-					api.PrometheusMetrics: {
-						Source: api.PrometheusMetrics,
-						Prometheus: &api.Prometheus{
-							URL: prometheusURL,
-						},
+			for _, setupMode := range []struct {
+				name string
+				init func(t *testing.T) *promClientController
+			}{
+				{
+					name: "running with prom reconciler directly",
+					init: func(t *testing.T) *promClientController {
+						return &promClientController{
+							currentPrometheusAuthToken: tc.currentAuthToken,
+							metricsProviders: map[api.MetricsSource]*api.MetricsProvider{
+								api.PrometheusMetrics: {
+									Source: api.PrometheusMetrics,
+									Prometheus: &api.Prometheus{
+										URL: prometheusURL,
+									},
+								},
+							},
+							inClusterConfig: tc.inClusterConfigFunc,
+						}
 					},
 				},
-				inClusterConfig: tc.inClusterConfigFunc,
-			}
+				{
+					name: "running with full descheduler",
+					init: func(t *testing.T) *promClientController {
+						ctx := context.Background()
+						prometheusConfig := &api.Prometheus{
+							URL: prometheusURL,
+						}
+						deschedulerPolicy := &api.DeschedulerPolicy{
+							MetricsProviders: []api.MetricsProvider{
+								{
+									Source:     api.PrometheusMetrics,
+									Prometheus: prometheusConfig,
+								},
+							},
+						}
 
-			// Set previous transport and client if test expects them to be cleared
-			if tc.expectPreviousTransportCleared {
-				ctrl.previousPrometheusClientTransport = &http.Transport{}
-			}
-			if tc.expectPromClientCleared {
-				ctrl.promClient = &mockPrometheusClient{name: "old-client"}
-			}
+						_, descheduler, _ := initDescheduler(t, ctx, initFeatureGates(), deschedulerPolicy, nil, false)
 
-			// Mock createPrometheusClient
-			clientCreated := false
-			if tc.createPrometheusClientFunc != nil {
-				ctrl.createPrometheusClient = func(url, token string) (promapi.Client, *http.Transport, error) {
-					client, transport, err := tc.createPrometheusClientFunc(url, token)
-					if err == nil {
-						clientCreated = true
+						// Override the fields needed for this test
+						descheduler.promClientCtrl.currentPrometheusAuthToken = tc.currentAuthToken
+						descheduler.promClientCtrl.inClusterConfig = tc.inClusterConfigFunc
+
+						return descheduler.promClientCtrl
+					},
+				},
+			} {
+				t.Run(setupMode.name, func(t *testing.T) {
+					ctrl := setupMode.init(t)
+
+					// Set previous transport and client if test expects them to be cleared
+					if tc.expectPreviousTransportCleared {
+						ctrl.previousPrometheusClientTransport = &http.Transport{}
 					}
-					return client, transport, err
-				}
-			}
-
-			// Call reconcileInClusterSAToken
-			err := ctrl.reconcileInClusterSAToken()
-
-			// Verify error expectations
-			if tc.expectedErr != nil {
-				if err == nil {
-					t.Errorf("Expected error %q but got none", tc.expectedErr)
-				} else if err.Error() != tc.expectedErr.Error() {
-					t.Errorf("Expected error %q but got %q", tc.expectedErr, err.Error())
-				}
-			} else {
-				if err != nil {
-					t.Errorf("Expected no error but got: %v", err)
-				}
-			}
-
-			// Verify client creation expectations
-			if tc.expectClientCreated && !clientCreated {
-				t.Errorf("Expected prometheus client to be created but it wasn't")
-			}
-			if !tc.expectClientCreated && clientCreated {
-				t.Errorf("Expected prometheus client not to be created but it was")
-			}
-
-			// Verify token expectations
-			if ctrl.currentPrometheusAuthToken != tc.expectCurrentToken {
-				t.Errorf("Expected current token to be %q but got %q", tc.expectCurrentToken, ctrl.currentPrometheusAuthToken)
-			}
-
-			// Verify previous transport cleared when expected
-			if tc.expectPreviousTransportCleared {
-				if tc.expectClientCreated {
-					// Success case: new transport should be set
-					if ctrl.previousPrometheusClientTransport == nil {
-						t.Error("Expected previous transport to be set to new transport, but it was nil")
+					if tc.expectPromClientCleared {
+						ctrl.promClient = &mockPrometheusClient{name: "old-client"}
 					}
-				} else if tc.expectedErr != nil {
-					// Failure case: transport should be nil
-					if ctrl.previousPrometheusClientTransport != nil {
-						t.Error("Expected previous transport to be cleared on error, but it was set")
-					}
-				}
-			}
 
-			// Verify promClient cleared when expected
-			if tc.expectPromClientCleared {
-				if ctrl.promClient != nil {
-					t.Error("Expected promClient to be cleared, but it was set")
-				}
+					// Mock createPrometheusClient
+					clientCreated := false
+					if tc.createPrometheusClientFunc != nil {
+						ctrl.createPrometheusClient = func(url, token string) (promapi.Client, *http.Transport, error) {
+							client, transport, err := tc.createPrometheusClientFunc(url, token)
+							if err == nil {
+								clientCreated = true
+							}
+							return client, transport, err
+						}
+					}
+
+					// Call reconcileInClusterSAToken
+					err := ctrl.reconcileInClusterSAToken()
+
+					// Verify error expectations
+					if tc.expectedErr != nil {
+						if err == nil {
+							t.Errorf("Expected error %q but got none", tc.expectedErr)
+						} else if err.Error() != tc.expectedErr.Error() {
+							t.Errorf("Expected error %q but got %q", tc.expectedErr, err.Error())
+						}
+					} else {
+						if err != nil {
+							t.Errorf("Expected no error but got: %v", err)
+						}
+					}
+
+					// Verify client creation expectations
+					if tc.expectClientCreated && !clientCreated {
+						t.Errorf("Expected prometheus client to be created but it wasn't")
+					}
+					if !tc.expectClientCreated && clientCreated {
+						t.Errorf("Expected prometheus client not to be created but it was")
+					}
+
+					// Verify token expectations
+					if ctrl.currentPrometheusAuthToken != tc.expectCurrentToken {
+						t.Errorf("Expected current token to be %q but got %q", tc.expectCurrentToken, ctrl.currentPrometheusAuthToken)
+					}
+
+					// Verify previous transport cleared when expected
+					if tc.expectPreviousTransportCleared {
+						if tc.expectClientCreated {
+							// Success case: new transport should be set
+							if ctrl.previousPrometheusClientTransport == nil {
+								t.Error("Expected previous transport to be set to new transport, but it was nil")
+							}
+						} else if tc.expectedErr != nil {
+							// Failure case: transport should be nil
+							if ctrl.previousPrometheusClientTransport != nil {
+								t.Error("Expected previous transport to be cleared on error, but it was set")
+							}
+						}
+					}
+
+					// Verify promClient cleared when expected
+					if tc.expectPromClientCleared {
+						if ctrl.promClient != nil {
+							t.Error("Expected promClient to be cleared, but it was set")
+						}
+					}
+				})
 			}
 		})
 	}
