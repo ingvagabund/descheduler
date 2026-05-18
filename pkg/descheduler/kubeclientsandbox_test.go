@@ -23,6 +23,7 @@ import (
 
 	v1 "k8s.io/api/core/v1"
 	policy "k8s.io/api/policy/v1"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/wait"
@@ -62,6 +63,30 @@ func setupTestSandbox(ctx context.Context, t *testing.T, initialObjects ...runti
 
 	realFactory.Start(ctx.Done())
 	realFactory.WaitForCacheSync(ctx.Done())
+
+	// Wait for initial objects to propagate from real client to fake client via event handlers.
+	// WaitForCacheSync above only ensures the real informers' caches are populated, but doesn't
+	// guarantee the event handlers have fired and added objects to the fake client's tracker.
+	// We need to wait for this propagation to avoid "not found" errors when tests immediately
+	// try to use objects (e.g., evict pods).
+	for _, obj := range initialObjects {
+		if err := wait.PollUntilContextTimeout(ctx, 10*time.Millisecond, 5*time.Second, true, func(ctx context.Context) (bool, error) {
+			exists, err := sandbox.hasRuntimeObjectInIndexer(obj)
+			if err != nil {
+				t.Logf("Error checking if object propagated to fake indexer: %v", err)
+				return false, nil
+			}
+			if !exists {
+				metaObj, _ := meta.Accessor(obj)
+				t.Logf("Initial object %s/%s has not propagated to fake indexer yet, waiting...", metaObj.GetNamespace(), metaObj.GetName())
+			}
+			return exists, nil
+		}); err != nil {
+			metaObj, _ := meta.Accessor(obj)
+			t.Fatalf("Initial object %s/%s did not propagate to fake indexer within timeout: %v",
+				metaObj.GetNamespace(), metaObj.GetName(), err)
+		}
+	}
 
 	return sandbox, realFactory, realClient
 }
