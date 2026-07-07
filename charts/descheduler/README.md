@@ -71,6 +71,7 @@ The following table lists the configurable parameters of the _descheduler_ chart
 | `priorityClassName`                 | The name of the priority class to add to pods                                                                         | `system-cluster-critical`                 |
 | `schedulerName`                     | The name of the scheduler used to schedule the descheduler cronjob/deployment pods                                    | `""`                                      |
 | `runtimeClassName`                  | The RuntimeClass applied to the descheduler cronjob/deployment pods                                                   | `""`                                      |
+| `hostUsers`                         | If set (`true`/`false`), sets `hostUsers` on the pod spec to control user-namespace sharing                           | `nil`                                     |
 | `rbac.create`                       | If `true`, create & use RBAC resources                                                                                | `true`                                    |
 | `resources`                         | Descheduler container CPU and memory requests/limits                                                                  | _see values.yaml_                         |
 | `serviceAccount.create`             | If `true`, create a service account for the cron job                                                                  | `true`                                    |
