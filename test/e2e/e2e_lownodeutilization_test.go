@@ -25,7 +25,6 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	v1 "k8s.io/api/core/v1"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
@@ -106,7 +105,10 @@ func TestLowNodeUtilizationKubernetesMetrics(t *testing.T) {
 	if _, err := clientSet.CoreV1().Namespaces().Create(ctx, testNamespace, metav1.CreateOptions{}); err != nil {
 		t.Fatalf("Unable to create ns %v: %v", testNamespace.Name, err)
 	}
-	defer clientSet.CoreV1().Namespaces().Delete(ctx, testNamespace.Name, metav1.DeleteOptions{})
+
+	t.Cleanup(func() {
+		clientSet.CoreV1().Namespaces().Delete(ctx, testNamespace.Name, metav1.DeleteOptions{})
+	})
 
 	t.Log("Creating duplicates pods")
 	testLabel := map[string]string{"app": "test-lownodeutilization-kubernetes-metrics", "name": "test-lownodeutilization-kubernetes-metrics"}
@@ -165,11 +167,11 @@ func TestLowNodeUtilizationKubernetesMetrics(t *testing.T) {
 			expectedEvictedPodCount: 2,
 			lowNodeUtilizationArgs: &nodeutilization.LowNodeUtilizationArgs{
 				Thresholds: api.ResourceThresholds{
-					v1.ResourceCPU:  10,
+					v1.ResourceCPU:  8,
 					v1.ResourcePods: 30,
 				},
 				TargetThresholds: api.ResourceThresholds{
-					v1.ResourceCPU:  20,
+					v1.ResourceCPU:  15,
 					v1.ResourcePods: 50,
 				},
 				MetricsUtilization: &nodeutilization.MetricsUtilization{
@@ -195,10 +197,11 @@ func TestLowNodeUtilizationKubernetesMetrics(t *testing.T) {
 				}
 				return
 			}
-			defer func() {
+
+			t.Cleanup(func() {
 				clientSet.AppsV1().Deployments(deploymentObj.Namespace).Delete(ctx, deploymentObj.Name, metav1.DeleteOptions{})
 				waitForPodsToDisappear(ctx, t, clientSet, deploymentObj.Labels, deploymentObj.Namespace)
-			}()
+			})
 			waitForPodsRunning(ctx, t, clientSet, deploymentObj.Labels, tc.replicasNum, deploymentObj.Namespace)
 			// wait until workerNodes[0].Name has the right actual cpu utilization and all the testing pods are running
 			// and producing ~4 cores in total
@@ -239,31 +242,7 @@ func TestLowNodeUtilizationKubernetesMetrics(t *testing.T) {
 			createPolicyConfigMap(t, ctx, clientSet, lowNodeUtilizationPolicy(tc.lowNodeUtilizationArgs, tc.evictorArgs, tc.metricsCollectorEnabled))
 
 			deschedulerDeploymentObj := deschedulerDeployment(testNamespace.Name)
-			t.Logf("Creating descheduler deployment %v", deschedulerDeploymentObj.Name)
-			_, err = clientSet.AppsV1().Deployments(deschedulerDeploymentObj.Namespace).Create(ctx, deschedulerDeploymentObj, metav1.CreateOptions{})
-			if err != nil {
-				t.Fatalf("Error creating %q deployment: %v", deschedulerDeploymentObj.Name, err)
-			}
-
-			deschedulerPodName := ""
-			t.Cleanup(func() {
-				if deschedulerPodName != "" {
-					printPodLogs(context.Background(), t, clientSet, deschedulerPodName)
-				}
-
-				t.Logf("Deleting %q deployment...", deschedulerDeploymentObj.Name)
-				if err := clientSet.AppsV1().Deployments(deschedulerDeploymentObj.Namespace).Delete(context.Background(), deschedulerDeploymentObj.Name, metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) {
-					t.Logf("Unable to delete %q deployment: %v", deschedulerDeploymentObj.Name, err)
-				}
-
-				waitForPodsToDisappear(context.Background(), t, clientSet, deschedulerDeploymentObj.Labels, deschedulerDeploymentObj.Namespace)
-			})
-
-			t.Logf("Waiting for the descheduler pod running")
-			deschedulerPods := waitForPodsRunning(ctx, t, clientSet, deschedulerDeploymentObj.Labels, 1, deschedulerDeploymentObj.Namespace)
-			if len(deschedulerPods) != 0 {
-				deschedulerPodName = deschedulerPods[0].Name
-			}
+			createDeschedulerDeploymentWithCleanup(t, ctx, clientSet, deschedulerDeploymentObj)
 
 			// Run LowNodeUtilization plugin
 			var meetsExpectations bool

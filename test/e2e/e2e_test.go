@@ -153,6 +153,43 @@ func createConfigMapWithCleanup(t *testing.T, ctx context.Context, kubeClient cl
 	return cm
 }
 
+// createDeschedulerDeploymentWithCleanup creates (or recreates if already existing) a descheduler deployment and registers a t.Cleanup callback.
+func createDeschedulerDeploymentWithCleanup(t *testing.T, ctx context.Context, kubeClient clientset.Interface, deployment *appsv1.Deployment) string {
+	t.Helper()
+	t.Logf("Creating descheduler deployment %v", deployment.Name)
+	_, err := kubeClient.AppsV1().Deployments(deployment.Namespace).Create(ctx, deployment, metav1.CreateOptions{})
+	if err != nil {
+		if apierrors.IsAlreadyExists(err) {
+			_ = kubeClient.AppsV1().Deployments(deployment.Namespace).Delete(ctx, deployment.Name, metav1.DeleteOptions{})
+			_, err = kubeClient.AppsV1().Deployments(deployment.Namespace).Create(ctx, deployment, metav1.CreateOptions{})
+		}
+		if err != nil {
+			t.Fatalf("Error creating %q deployment: %v", deployment.Name, err)
+		}
+	}
+
+	deschedulerPodName := ""
+	t.Cleanup(func() {
+		if deschedulerPodName != "" {
+			printPodLogs(context.Background(), t, kubeClient, deschedulerPodName)
+		}
+
+		t.Logf("Deleting %q deployment...", deployment.Name)
+		if err := kubeClient.AppsV1().Deployments(deployment.Namespace).Delete(context.Background(), deployment.Name, metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) {
+			t.Logf("Unable to delete %q deployment: %v", deployment.Name, err)
+		}
+
+		waitForPodsToDisappear(context.Background(), t, kubeClient, deployment.Labels, deployment.Namespace)
+	})
+
+	t.Logf("Waiting for the descheduler pod running")
+	deschedulerPods := waitForPodsRunning(ctx, t, kubeClient, deployment.Labels, 1, deployment.Namespace)
+	if len(deschedulerPods) != 0 {
+		deschedulerPodName = deschedulerPods[0].Name
+	}
+	return deschedulerPodName
+}
+
 func deschedulerDeployment(testName string) *appsv1.Deployment {
 	deploymentObject := &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{

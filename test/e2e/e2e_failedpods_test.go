@@ -9,7 +9,6 @@ import (
 
 	batchv1 "k8s.io/api/batch/v1"
 	v1 "k8s.io/api/core/v1"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -149,31 +148,7 @@ func TestFailedPods(t *testing.T) {
 			createPolicyConfigMap(t, ctx, clientSet, removeFailedPodsPolicy(tc.removeFailedPodsArgs, evictorArgs))
 
 			deschedulerDeploymentObj := deschedulerDeployment(testNamespace.Name)
-			t.Logf("Creating descheduler deployment %v", deschedulerDeploymentObj.Name)
-			_, err = clientSet.AppsV1().Deployments(deschedulerDeploymentObj.Namespace).Create(ctx, deschedulerDeploymentObj, metav1.CreateOptions{})
-			if err != nil {
-				t.Fatalf("Error creating %q deployment: %v", deschedulerDeploymentObj.Name, err)
-			}
-
-			deschedulerPodName := ""
-			t.Cleanup(func() {
-				if deschedulerPodName != "" {
-					printPodLogs(context.Background(), t, clientSet, deschedulerPodName)
-				}
-
-				t.Logf("Deleting %q deployment...", deschedulerDeploymentObj.Name)
-				if err := clientSet.AppsV1().Deployments(deschedulerDeploymentObj.Namespace).Delete(context.Background(), deschedulerDeploymentObj.Name, metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) {
-					t.Logf("Unable to delete %q deployment: %v", deschedulerDeploymentObj.Name, err)
-				}
-
-				waitForPodsToDisappear(context.Background(), t, clientSet, deschedulerDeploymentObj.Labels, deschedulerDeploymentObj.Namespace)
-			})
-
-			t.Logf("Waiting for the descheduler pod running")
-			deschedulerPods := waitForPodsRunning(ctx, t, clientSet, deschedulerDeploymentObj.Labels, 1, deschedulerDeploymentObj.Namespace)
-			if len(deschedulerPods) != 0 {
-				deschedulerPodName = deschedulerPods[0].Name
-			}
+			createDeschedulerDeploymentWithCleanup(t, ctx, clientSet, deschedulerDeploymentObj)
 
 			// Run RemoveDuplicates strategy
 			var meetsExpectations bool

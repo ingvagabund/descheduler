@@ -106,86 +106,51 @@ func formatContainerStatuses(pod *corev1.Pod) string {
 	return strings.Join(parts, "; ")
 }
 
-// ensureVMIsLiveMigratable waits until every VMI reports the LiveMigratable
-// condition with status True. If a VMI fails to become migratable within the
-// per-attempt timeout, it is deleted and recreated. This works around an
-// upstream KubeVirt race where virt-handler computes the containerdisk
-// checksum before the disk socket is ready, fails, and never retries; the
-// recreated VMI lands on a node that already has the containerdisk image
-// cached, so the socket comes up before virt-handler's first attempt.
-// See https://github.com/kubernetes-sigs/descheduler/pull/1874 for context.
+// ensureVMIsLiveMigratable waits until every VMI reports the LiveMigratable condition with status True.
 func ensureVMIsLiveMigratable(t *testing.T, ctx context.Context, kvClient kubevirtclient.Interface, namespace string) {
 	t.Helper()
-	const (
-		maxAttempts    = 3
-		perAttemptWait = 120 * time.Second
-		deleteWait     = 60 * time.Second
-	)
-
-	isLiveMigratable := func(vmi *kvcorev1.VirtualMachineInstance) bool {
-		for _, c := range vmi.Status.Conditions {
-			if c.Type == kvcorev1.VirtualMachineInstanceIsMigratable && c.Status == corev1.ConditionTrue {
-				return true
+	err := wait.PollUntilContextTimeout(ctx, 3*time.Second, 180*time.Second, true, func(ctx context.Context) (bool, error) {
+		vmiList, err := kvClient.KubevirtV1().VirtualMachineInstances(namespace).List(ctx, metav1.ListOptions{})
+		if err != nil || len(vmiList.Items) != vmiCount {
+			return false, nil
+		}
+		for _, vmi := range vmiList.Items {
+			migratable := false
+			for _, c := range vmi.Status.Conditions {
+				if c.Type == kvcorev1.VirtualMachineInstanceIsMigratable && c.Status == corev1.ConditionTrue {
+					migratable = true
+					break
+				}
+			}
+			if !migratable {
+				return false, nil
 			}
 		}
-		return false
+		return true, nil
+	})
+	if err != nil {
+		t.Fatalf("VMIs never became LiveMigratable: %v", err)
 	}
-
-	for i := 1; i <= vmiCount; i++ {
-		name := fmt.Sprintf("kubevirtvmi-%v", i)
-		var lastVMI *kvcorev1.VirtualMachineInstance
-		for attempt := 1; attempt <= maxAttempts; attempt++ {
-			err := wait.PollUntilContextTimeout(ctx, 5*time.Second, perAttemptWait, true, func(ctx context.Context) (bool, error) {
-				vmi, err := kvClient.KubevirtV1().VirtualMachineInstances(namespace).Get(ctx, name, metav1.GetOptions{})
-				if err != nil {
-					klog.Infof("Unable to get vmi %v: %v", name, err)
-					return false, nil
-				}
-				lastVMI = vmi
-				return isLiveMigratable(vmi), nil
-			})
-			if err == nil {
-				klog.Infof("vmi %v is LiveMigratable (attempt %d/%d)", name, attempt, maxAttempts)
-				break
-			}
-			if attempt == maxAttempts {
-				if lastVMI != nil {
-					klog.Infof("Final vmi %v status: phase=%v, conditions=%#v", name, lastVMI.Status.Phase, lastVMI.Status.Conditions)
-				}
-				t.Fatalf("vmi %v never became LiveMigratable after %d attempts", name, maxAttempts)
-			}
-			klog.Warningf("vmi %v not LiveMigratable after %v, recreating (attempt %d/%d) to work around virt-handler containerdisk-socket race", name, perAttemptWait, attempt, maxAttempts)
-			if err := kvClient.KubevirtV1().VirtualMachineInstances(namespace).Delete(ctx, name, metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) {
-				t.Fatalf("Unable to delete vmi %v for retry: %v", name, err)
-			}
-			if err := wait.PollUntilContextTimeout(ctx, 2*time.Second, deleteWait, true, func(ctx context.Context) (bool, error) {
-				_, err := kvClient.KubevirtV1().VirtualMachineInstances(namespace).Get(ctx, name, metav1.GetOptions{})
-				return apierrors.IsNotFound(err), nil
-			}); err != nil {
-				t.Fatalf("Timed out waiting for vmi %v to be deleted: %v", name, err)
-			}
-			if _, err := kvClient.KubevirtV1().VirtualMachineInstances(namespace).Create(ctx, virtualMachineInstance(i, namespace), metav1.CreateOptions{}); err != nil {
-				t.Fatalf("Unable to recreate vmi %v: %v", name, err)
-			}
-		}
-	}
+	klog.Infof("All VMIs are LiveMigratable")
 }
 
 func waitForKubevirtReady(t *testing.T, ctx context.Context, kvClient kubevirtclient.Interface) {
-	obj, err := kvClient.KubevirtV1().KubeVirts("kubevirt").Get(ctx, "kubevirt", metav1.GetOptions{})
-	if err != nil {
-		t.Fatalf("Unable to get kubevirt/kubevirt: %v", err)
-	}
-	available := false
-	for _, condition := range obj.Status.Conditions {
-		if condition.Type == kvcorev1.KubeVirtConditionAvailable {
-			if condition.Status == corev1.ConditionTrue {
-				available = true
+	t.Helper()
+	err := wait.PollUntilContextTimeout(ctx, 3*time.Second, 180*time.Second, true, func(ctx context.Context) (bool, error) {
+		obj, err := kvClient.KubevirtV1().KubeVirts("kubevirt").Get(ctx, "kubevirt", metav1.GetOptions{})
+		if err != nil {
+			klog.Infof("Unable to get kubevirt/kubevirt: %v", err)
+			return false, nil
+		}
+		for _, condition := range obj.Status.Conditions {
+			if condition.Type == kvcorev1.KubeVirtConditionAvailable && condition.Status == corev1.ConditionTrue {
+				return true, nil
 			}
 		}
-	}
-	if !available {
-		t.Fatalf("Kubevirt is not available")
+		return false, nil
+	})
+	if err != nil {
+		t.Fatalf("Kubevirt is not available: %v", err)
 	}
 	klog.Infof("Kubevirt is available")
 }
@@ -415,7 +380,13 @@ func createAndWaitForDeschedulerRunning(t *testing.T, ctx context.Context, kubeC
 	klog.Infof("Creating descheduler deployment %v", deschedulerDeploymentObj.Name)
 	_, err := kubeClient.AppsV1().Deployments(deschedulerDeploymentObj.Namespace).Create(ctx, deschedulerDeploymentObj, metav1.CreateOptions{})
 	if err != nil {
-		t.Fatalf("Error creating %q deployment: %v", deschedulerDeploymentObj.Name, err)
+		if apierrors.IsAlreadyExists(err) {
+			_ = kubeClient.AppsV1().Deployments(deschedulerDeploymentObj.Namespace).Delete(ctx, deschedulerDeploymentObj.Name, metav1.DeleteOptions{})
+			_, err = kubeClient.AppsV1().Deployments(deschedulerDeploymentObj.Namespace).Create(ctx, deschedulerDeploymentObj, metav1.CreateOptions{})
+		}
+		if err != nil {
+			t.Fatalf("Error creating %q deployment: %v", deschedulerDeploymentObj.Name, err)
+		}
 	}
 
 	klog.Infof("Waiting for the descheduler pod running")
