@@ -9,6 +9,7 @@ import (
 
 	batchv1 "k8s.io/api/batch/v1"
 	v1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -145,24 +146,7 @@ func TestFailedPods(t *testing.T) {
 				Include: []string{testNamespace.Name},
 			}
 
-			deschedulerPolicyConfigMapObj, err := deschedulerPolicyConfigMap(removeFailedPodsPolicy(tc.removeFailedPodsArgs, evictorArgs))
-			if err != nil {
-				t.Fatalf("Error creating %q CM: %v", deschedulerPolicyConfigMapObj.Name, err)
-			}
-
-			t.Logf("Creating %q policy CM with RemoveDuplicates configured...", deschedulerPolicyConfigMapObj.Name)
-			_, err = clientSet.CoreV1().ConfigMaps(deschedulerPolicyConfigMapObj.Namespace).Create(ctx, deschedulerPolicyConfigMapObj, metav1.CreateOptions{})
-			if err != nil {
-				t.Fatalf("Error creating %q CM: %v", deschedulerPolicyConfigMapObj.Name, err)
-			}
-
-			defer func() {
-				t.Logf("Deleting %q CM...", deschedulerPolicyConfigMapObj.Name)
-				err = clientSet.CoreV1().ConfigMaps(deschedulerPolicyConfigMapObj.Namespace).Delete(ctx, deschedulerPolicyConfigMapObj.Name, metav1.DeleteOptions{})
-				if err != nil {
-					t.Fatalf("Unable to delete %q CM: %v", deschedulerPolicyConfigMapObj.Name, err)
-				}
-			}()
+			createPolicyConfigMap(t, ctx, clientSet, removeFailedPodsPolicy(tc.removeFailedPodsArgs, evictorArgs))
 
 			deschedulerDeploymentObj := deschedulerDeployment(testNamespace.Name)
 			t.Logf("Creating descheduler deployment %v", deschedulerDeploymentObj.Name)
@@ -172,19 +156,18 @@ func TestFailedPods(t *testing.T) {
 			}
 
 			deschedulerPodName := ""
-			defer func() {
+			t.Cleanup(func() {
 				if deschedulerPodName != "" {
-					printPodLogs(ctx, t, clientSet, deschedulerPodName)
+					printPodLogs(context.Background(), t, clientSet, deschedulerPodName)
 				}
 
 				t.Logf("Deleting %q deployment...", deschedulerDeploymentObj.Name)
-				err = clientSet.AppsV1().Deployments(deschedulerDeploymentObj.Namespace).Delete(ctx, deschedulerDeploymentObj.Name, metav1.DeleteOptions{})
-				if err != nil {
-					t.Fatalf("Unable to delete %q deployment: %v", deschedulerDeploymentObj.Name, err)
+				if err := clientSet.AppsV1().Deployments(deschedulerDeploymentObj.Namespace).Delete(context.Background(), deschedulerDeploymentObj.Name, metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) {
+					t.Logf("Unable to delete %q deployment: %v", deschedulerDeploymentObj.Name, err)
 				}
 
-				waitForPodsToDisappear(ctx, t, clientSet, deschedulerDeploymentObj.Labels, deschedulerDeploymentObj.Namespace)
-			}()
+				waitForPodsToDisappear(context.Background(), t, clientSet, deschedulerDeploymentObj.Labels, deschedulerDeploymentObj.Namespace)
+			})
 
 			t.Logf("Waiting for the descheduler pod running")
 			deschedulerPods := waitForPodsRunning(ctx, t, clientSet, deschedulerDeploymentObj.Labels, 1, deschedulerDeploymentObj.Namespace)

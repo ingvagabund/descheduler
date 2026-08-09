@@ -31,6 +31,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	v1 "k8s.io/api/core/v1"
 	schedulingv1 "k8s.io/api/scheduling/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
@@ -84,7 +85,12 @@ func TestMain(m *testing.M) {
 }
 
 func isClientRateLimiterError(err error) bool {
-	return strings.Contains(err.Error(), "client rate limiter")
+	if err == nil {
+		return false
+	}
+	return strings.Contains(err.Error(), "client rate limiter") &&
+		!strings.Contains(err.Error(), "context deadline exceeded") &&
+		!strings.Contains(err.Error(), "context canceled")
 }
 
 func initFeatureGates() featuregate.FeatureGate {
@@ -110,6 +116,41 @@ func deschedulerPolicyConfigMap(policy *deschedulerapiv1alpha2.DeschedulerPolicy
 	}
 	cm.Data = map[string]string{"policy.yaml": string(policyBytes)}
 	return cm, nil
+}
+
+// createPolicyConfigMap generates, creates (or recreates if already existing), and registers cleanup for a descheduler policy ConfigMap.
+func createPolicyConfigMap(t *testing.T, ctx context.Context, kubeClient clientset.Interface, policy *deschedulerapiv1alpha2.DeschedulerPolicy) *v1.ConfigMap {
+	t.Helper()
+	cm, err := deschedulerPolicyConfigMap(policy)
+	if err != nil {
+		t.Fatalf("Error creating policy CM object: %v", err)
+	}
+	return createConfigMapWithCleanup(t, ctx, kubeClient, cm)
+}
+
+// createConfigMapWithCleanup creates (or recreates if already existing) a ConfigMap and registers a t.Cleanup callback to delete it.
+func createConfigMapWithCleanup(t *testing.T, ctx context.Context, kubeClient clientset.Interface, cm *v1.ConfigMap) *v1.ConfigMap {
+	t.Helper()
+	t.Logf("Creating %q policy CM...", cm.Name)
+	_, err := kubeClient.CoreV1().ConfigMaps(cm.Namespace).Create(ctx, cm, metav1.CreateOptions{})
+	if err != nil {
+		if apierrors.IsAlreadyExists(err) {
+			_ = kubeClient.CoreV1().ConfigMaps(cm.Namespace).Delete(ctx, cm.Name, metav1.DeleteOptions{})
+			_, err = kubeClient.CoreV1().ConfigMaps(cm.Namespace).Create(ctx, cm, metav1.CreateOptions{})
+		}
+		if err != nil {
+			t.Fatalf("Error creating %q CM: %v", cm.Name, err)
+		}
+	}
+
+	t.Cleanup(func() {
+		t.Logf("Deleting %q CM...", cm.Name)
+		if err := kubeClient.CoreV1().ConfigMaps(cm.Namespace).Delete(context.Background(), cm.Name, metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) {
+			t.Logf("Unable to delete %q CM: %v", cm.Name, err)
+		}
+	})
+
+	return cm
 }
 
 func deschedulerDeployment(testName string) *appsv1.Deployment {
