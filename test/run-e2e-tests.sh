@@ -27,12 +27,12 @@ KIND_VERSION=${KIND_VERSION:-v0.31.0}
 SKIP_KUBECTL_INSTALL=${SKIP_KUBECTL_INSTALL:-}
 SKIP_KIND_INSTALL=${SKIP_KIND_INSTALL:-}
 SKIP_KUBEVIRT_INSTALL=${SKIP_KUBEVIRT_INSTALL:-}
-KUBEVIRT_VERSION=${KUBEVIRT_VERSION:-v1.9.0}
 K8S_VERSION=${KUBERNETES_VERSION:-}
 
 # Build a descheduler image
 IMAGE_TAG=v$(date +%Y%m%d)-$(git describe --tags)
 BASEDIR=$(dirname "$0")
+KUBEVIRT_VERSION=${KUBEVIRT_VERSION:-$(grep 'kubevirt.io/api ' "${BASEDIR}/../go.mod" | awk '{print $2}')}
 VERSION="${IMAGE_TAG}" make -C ${BASEDIR}/.. image
 
 export DESCHEDULER_IMAGE="docker.io/library/descheduler:${IMAGE_TAG}"
@@ -115,4 +115,4 @@ kubectl patch -n kube-system deployment metrics-server --type=json \
 kubectl wait --timeout=180s --for=condition=Available -n kube-system deployment/metrics-server
 
 PRJ_PREFIX="sigs.k8s.io/descheduler"
-go test ${PRJ_PREFIX}/test/e2e/ -v -timeout 0 --args --descheduler-image ${DESCHEDULER_IMAGE} --pod-run-as-user-id 1000 --pod-run-as-group-id 1000
+go test ${PRJ_PREFIX}/test/e2e/ -v -timeout 0 --args --descheduler-image ${DESCHEDULER_IMAGE} --kubevirt-version-tag ${KUBEVIRT_VERSION} --pod-run-as-user-id 1000 --pod-run-as-group-id 1000
