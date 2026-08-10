@@ -27,7 +27,8 @@ KIND_VERSION=${KIND_VERSION:-v0.31.0}
 SKIP_KUBECTL_INSTALL=${SKIP_KUBECTL_INSTALL:-}
 SKIP_KIND_INSTALL=${SKIP_KIND_INSTALL:-}
 SKIP_KUBEVIRT_INSTALL=${SKIP_KUBEVIRT_INSTALL:-}
-KUBEVIRT_VERSION=${KUBEVIRT_VERSION:-v1.8.2}
+KUBEVIRT_VERSION=${KUBEVIRT_VERSION:-v1.9.0}
+K8S_VERSION=${KUBERNETES_VERSION:-}
 
 # Build a descheduler image
 IMAGE_TAG=v$(date +%Y%m%d)-$(git describe --tags)
@@ -39,7 +40,7 @@ echo "DESCHEDULER_IMAGE: ${DESCHEDULER_IMAGE}"
 
 # This just runs e2e tests.
 if [ -n "$KIND_E2E" ]; then
-    K8S_VERSION=${KUBERNETES_VERSION:-v1.36.1}
+    K8S_VERSION=${K8S_VERSION:-v1.36.1}
     KIND_NODE_IMAGE=${KIND_NODE_IMAGE:-localhost/kindest/node:${K8S_VERSION}}
     if [ -z "${SKIP_KUBECTL_INSTALL}" ]; then
         curl -Lo kubectl https://dl.k8s.io/release/${K8S_VERSION}/bin/linux/amd64/kubectl && chmod +x kubectl && mv kubectl /usr/local/bin/
@@ -98,7 +99,12 @@ trap "collect_logs" ERR
 if [ -z "${SKIP_KUBEVIRT_INSTALL}" ]; then
   kubectl create -f https://github.com/kubevirt/kubevirt/releases/download/${KUBEVIRT_VERSION}/kubevirt-operator.yaml
   kubectl create -f https://github.com/kubevirt/kubevirt/releases/download/${KUBEVIRT_VERSION}/kubevirt-cr.yaml
-  kubectl -n kubevirt patch kubevirt kubevirt --type=merge --patch '{"spec":{"configuration":{"developerConfiguration":{"useEmulation":true}}}}'
+  # TODO(1.37): drop this patch when the k8s 1.34 e2e lane is removed. ImageVolume needs k8s >= 1.35.
+  if [[ "${K8S_VERSION}" == v1.34* ]]; then
+    kubectl -n kubevirt patch kubevirt kubevirt --type=merge --patch '{"spec":{"configuration":{"developerConfiguration":{"useEmulation":true,"disabledFeatureGates":["ImageVolume"]}}}}'
+  else
+    kubectl -n kubevirt patch kubevirt kubevirt --type=merge --patch '{"spec":{"configuration":{"developerConfiguration":{"useEmulation":true}}}}'
+  fi
   kubectl wait --timeout=300s --for=condition=Available -n kubevirt kv/kubevirt
 fi
 
