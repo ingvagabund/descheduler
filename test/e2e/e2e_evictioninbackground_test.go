@@ -77,7 +77,7 @@ func virtualMachineInstance(idx int, namespace string) *kvcorev1.VirtualMachineI
 					Name: "containerdisk",
 					VolumeSource: kvcorev1.VolumeSource{
 						ContainerDisk: &kvcorev1.ContainerDiskSource{
-							Image: "quay.io/kubevirt/cirros-container-disk-demo:v1.9.0",
+							Image: kubevirtCirrosContainerDiskImage(),
 						},
 					},
 				},
@@ -484,6 +484,10 @@ func waitForVMIEvictionsWithNoLimits(t *testing.T, ctx context.Context, kubeClie
 }
 
 func TestLiveMigrationInBackground(t *testing.T) {
+	if *kubevirtVersionTag == "" {
+		t.Fatal("--kubevirt-version-tag must be set for KubeVirt e2e tests")
+	}
+
 	initPluginRegistry()
 
 	ctx := context.Background()

@@ -68,10 +68,15 @@ import (
 )
 
 var (
-	deschedulerImage = flag.String("descheduler-image", "", "descheduler image to set in the pod spec")
-	podRunAsUserId   = flag.Int64("pod-run-as-user-id", 0, ".spec.securityContext.runAsUser setting, not set if 0")
-	podRunAsGroupId  = flag.Int64("pod-run-as-group-id", 0, ".spec.securityContext.runAsGroup setting, not set if 0")
+	deschedulerImage   = flag.String("descheduler-image", "", "descheduler image to set in the pod spec")
+	kubevirtVersionTag = flag.String("kubevirt-version-tag", "", "KubeVirt release tag for container disk images in KubeVirt e2e tests (e.g. v1.9.0)")
+	podRunAsUserId     = flag.Int64("pod-run-as-user-id", 0, ".spec.securityContext.runAsUser setting, not set if 0")
+	podRunAsGroupId    = flag.Int64("pod-run-as-group-id", 0, ".spec.securityContext.runAsGroup setting, not set if 0")
 )
+
+func kubevirtCirrosContainerDiskImage() string {
+	return fmt.Sprintf("quay.io/kubevirt/cirros-container-disk-demo:%s", *kubevirtVersionTag)
+}
 
 func TestMain(m *testing.M) {
 	flag.Parse()
