@@ -41,3 +41,27 @@ tests:
           path: spec.jobTemplate.spec.template.spec.schedulerName
       - notExists:
           path: spec.jobTemplate.spec.template.spec.runtimeClassName
+
+  - it: sets hostUsers to false when configured
+    set:
+      hostUsers: false
+    template: templates/cronjob.yaml
+    asserts:
+      - equal:
+          path: spec.jobTemplate.spec.template.spec.hostUsers
+          value: false
+
+  - it: sets hostUsers to true when configured
+    set:
+      hostUsers: true
+    template: templates/cronjob.yaml
+    asserts:
+      - equal:
+          path: spec.jobTemplate.spec.template.spec.hostUsers
+          value: true
+
+  - it: omits hostUsers by default
+    template: templates/cronjob.yaml
+    asserts:
+      - notExists:
+          path: spec.jobTemplate.spec.template.spec.hostUsers

@@ -172,6 +172,11 @@ schedulerName: ""
 # Leave empty to use the cluster default runtime.
 runtimeClassName: ""
 
+# Set the Pod spec `hostUsers` field to control user-namespace sharing.
+# Default is not set (the cluster default applies). Set to `false` to opt into
+# user-namespace isolation, or `true` to share the host user namespace.
+# hostUsers: false
+
 nodeSelector: {}
 #  foo: bar
 
